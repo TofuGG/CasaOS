@@ -16,6 +16,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+## [0.4.16]
+
+### Security
+
+- Replace hardcoded HMAC signing key with cryptographically random key persisted to disk
+- Remove hardcoded OAuth credentials for Dropbox, GoogleDrive, OneDrive
+- Move debug endpoint behind JWT authentication
+- Fix file permissions (0o777→0o750, 0o666→0o600)
+- Fix CORS configuration (disable AllowCredentials with wildcard origins)
+- Remove JWT token acceptance from URL query parameters (header-only)
+- Add WebSocket origin validation
+- Add cookie security flags (HttpOnly, SameSite=Strict)
+- Fix XSS in error messages for cloud recovery handlers
+- Fix panic() replaced with proper error handling
+- **[SSRF]** Block private/reserved IP ranges in `/v1/sys/proxy` endpoint to prevent SSRF attacks ([CVE-2026-28798](https://github.com/IceWhaleTech/CasaOS/issues/28798))
+- **[Auth]** Enforce JWT authentication on file/batch/image/folder APIs even from localhost — prevents local unprivileged processes from bypassing auth ([CVE-2025-58431](https://github.com/IceWhaleTech/CasaOS/issues/58431))
+- **[Path]** Add write-path sanitization to block file API operations on critical system directories (/etc, /boot, /usr, /sys, /proc, /dev)
+- **[Path]** Add read-path protection for sensitive files (/etc/shadow, SSH keys, sudoers)
+- **[Path]** Apply same protections to v2 file download handler
+- **[Samba]** Fix Samba share permissions (create mask 0777→0644, directory mask 0777→0755)
+- **[Samba]** Enforce authentication on non-anonymous shares (guest ok=No, public=No)
+- **[Samba]** Share creation uses 0o755 instead of 0o777
+- **[Crypto]** Replace math/rand with crypto/rand in ZeroTier CIDR selection
+- **[Error]** Remove error information leakage from ZeroTier proxy responses
+- **[Auth]** Move version check endpoints behind JWT authentication
+- **[Error]** Remove debug fmt.Println statements from ZeroTier proxy
+
+### Fixed
+
+- [System] Fix CPU thermal zone log spam ([#2575](https://github.com/IceWhaleTech/CasaOS/issues/2575))
+- [System] Fix os.Exit(0) DoS in system stop endpoint
+- [API] Reduce error information leakage in API responses
+- [File] Fix OneDrive GetInfo to fallback to displayName when email is empty
+- [File] Deduplicate CopyFile/CopySingleFile logic
+- [Samba] Fix `DeleteShareByPath` using exact match instead of prefix match — deleting a parent share no longer kills subfolder shares
+- [Samba] Fix misspelled function names `EditSmabaUserPassword`/`AddSmabaUser` in helper.sh (PR [#2359](https://github.com/IceWhaleTech/CasaOS/pull/2359))
+- [Setup] Add Ubuntu 26 "resolute" codename fallback in setup script (PR [#2569](https://github.com/IceWhaleTech/CasaOS/pull/2569))
+- [Compat] Add `DOCKER_MIN_API_VERSION=1.24` env to systemd unit as Docker 29 workaround ([#2407](https://github.com/IceWhaleTech/CasaOS/issues/2407))
+
+### Added
+
+- [Samba] Pause/Resume sharing feature — PUT `/v1/samba/shares/:id/pause` and `/:id/resume` endpoints
+- [Samba] Share list API now includes `paused` field
+
+### Changed
+
+- [General] Upgrade Echo framework v4.12 → v4.15 (JWT middleware extracted to echo-jwt/v4)
+- [General] Upgrade all golang.org/x/* dependencies to latest versions
+- [General] Upgrade protobuf, kin-openapi, and other dependencies
+- [Engineering] Replace deprecated ioutil with io/os equivalents
+- [Engineering] Go version requirement updated to 1.23+
+
 ## [0.4.3]
 
 ### Added

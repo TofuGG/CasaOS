@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"io"
-	"io/ioutil"
+	"net"
 	"net/http"
 	"time"
 
@@ -12,11 +12,36 @@ import (
 	"github.com/tidwall/gjson"
 )
 
+// sharedHTTPClient is a shared HTTP client with a reusable transport to enable
+// DNS caching and connection reuse across all HTTP calls in the application.
+// This prevents excessive DNS lookups when many requests target the same host.
+var sharedHTTPTransport = &http.Transport{
+	DialContext: (&net.Dialer{
+		Timeout:   10 * time.Second,
+		KeepAlive: 30 * time.Second,
+	}).DialContext,
+	MaxIdleConns:          100,
+	MaxIdleConnsPerHost:   100,
+	IdleConnTimeout:       90 * time.Second,
+	TLSHandshakeTimeout:   10 * time.Second,
+	ExpectContinueTimeout: 1 * time.Second,
+}
+
+// newHTTPClient returns a client using the shared transport with DNS caching.
+// Each caller can specify its own timeout while still benefiting from the
+// shared connection pool and DNS cache.
+func newHTTPClient(timeout time.Duration) *http.Client {
+	return &http.Client{
+		Timeout:   timeout,
+		Transport: sharedHTTPTransport,
+	}
+}
+
 // 发送GET请求
 // url:请求地址
 // response:请求返回的内容
 func Get(url string, head map[string]string) (response string) {
-	client := &http.Client{Timeout: 30 * time.Second}
+	client := newHTTPClient(30 * time.Second)
 	req, err := http.NewRequest("GET", url, nil)
 
 	for k, v := range head {
@@ -55,7 +80,7 @@ func Get(url string, head map[string]string) (response string) {
 // url:请求地址
 // response:请求返回的内容
 func PersonGet(url string) (response string) {
-	client := &http.Client{Timeout: 5 * time.Second}
+	client := newHTTPClient(5 * time.Second)
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		return ""
@@ -98,7 +123,7 @@ func Post(url string, data []byte, contentType string, head map[string]string) (
 		panic(err)
 	}
 
-	client := &http.Client{Timeout: 5 * time.Second}
+	client := newHTTPClient(5 * time.Second)
 	resp, error := client.Do(req)
 	if error != nil {
 		fmt.Println(error)
@@ -106,7 +131,7 @@ func Post(url string, data []byte, contentType string, head map[string]string) (
 	}
 	defer resp.Body.Close()
 
-	result, _ := ioutil.ReadAll(resp.Body)
+	result, _ := io.ReadAll(resp.Body)
 	content = string(result)
 	return
 }
@@ -123,7 +148,7 @@ func ZeroTierGet(url string, head map[string]string) (content string, code int) 
 		panic(err)
 	}
 
-	client := &http.Client{Timeout: 20 * time.Second}
+	client := newHTTPClient(20 * time.Second)
 	resp, error := client.Do(req)
 
 	if error != nil {
@@ -131,7 +156,7 @@ func ZeroTierGet(url string, head map[string]string) (content string, code int) 
 	}
 	defer resp.Body.Close()
 	code = resp.StatusCode
-	result, _ := ioutil.ReadAll(resp.Body)
+	result, _ := io.ReadAll(resp.Body)
 	content = string(result)
 	return
 }

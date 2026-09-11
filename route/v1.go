@@ -10,42 +10,94 @@ import (
 	"github.com/IceWhaleTech/CasaOS/common"
 	"github.com/IceWhaleTech/CasaOS/pkg/config"
 	v1 "github.com/IceWhaleTech/CasaOS/route/v1"
+	echo_jwt "github.com/labstack/echo-jwt/v4"
 	"github.com/labstack/echo/v4"
 	echo_middleware "github.com/labstack/echo/v4/middleware"
 )
 
+// forceAuthMiddleware requires a valid JWT even for localhost requests.
+// This prevents local unprivileged processes from bypassing authentication
+// on sensitive routes (file API, batch operations, image serving).
+func forceAuthMiddleware() echo.MiddlewareFunc {
+	return echo_jwt.WithConfig(echo_jwt.Config{
+		Skipper: func(c echo.Context) bool {
+			return false // Never skip — always require auth
+		},
+		ParseTokenFunc: func(c echo.Context, token string) (interface{}, error) {
+			valid, claims, err := jwt.Validate(token, func() (*ecdsa.PublicKey, error) {
+				return external.GetPublicKey(config.CommonInfo.RuntimePath)
+			})
+			if err != nil || !valid {
+				return nil, echo.ErrUnauthorized
+			}
+			c.Request().Header.Set("user_id", strconv.Itoa(claims.ID))
+			return claims, nil
+		},
+		TokenLookupFuncs: []echo_middleware.ValuesExtractor{
+			tokenFromRequest,
+		},
+	})
+}
+
+// websocketPaths lists the browser WebSocket endpoints. A browser WebSocket
+// cannot set the Authorization header, so these routes additionally accept the
+// JWT as a short-lived `token` query parameter (which the frontend already
+// uses). Every other route stays header-only.
+func websocketPaths() map[string]bool {
+	return map[string]bool{
+		"/v1/sys/wsssh": true,
+		"/v1/file/ws":   true,
+	}
+}
+
+// tokenFromRequest extracts the JWT from the Authorization header, or — only
+// for the WebSocket endpoints above — from the `token` query parameter.
+func tokenFromRequest(c echo.Context) ([]string, error) {
+	if len(c.Request().Header.Get(echo.HeaderAuthorization)) > 0 {
+		return []string{c.Request().Header.Get(echo.HeaderAuthorization)}, nil
+	}
+	if websocketPaths()[c.Path()] {
+		if t := c.QueryParam("token"); t != "" {
+			return []string{t}, nil
+		}
+	}
+	return []string{""}, nil
+}
+
 func InitV1Router() http.Handler {
 	e := echo.New()
 
+	// SECURITY: Never trust client-supplied X-Forwarded-For / X-Real-IP headers for
+	// remote-address determination. Extract the IP directly from the socket, so
+	// RealIP() cannot be spoofed (the JWT skipper previously relied on it).
+	e.IPExtractor = echo.ExtractIPDirect()
+
 	e.Use((echo_middleware.CORSWithConfig(echo_middleware.CORSConfig{
-		AllowOrigins:     []string{"*"},
+		AllowOrigins: []string{
+			"http://127.0.0.1:*",
+			"http://localhost:*",
+			"https://127.0.0.1:*",
+			"https://localhost:*",
+		},
 		AllowMethods:     []string{echo.POST, echo.GET, echo.OPTIONS, echo.PUT, echo.DELETE},
 		AllowHeaders:     []string{echo.HeaderAuthorization, echo.HeaderContentLength, echo.HeaderXCSRFToken, echo.HeaderContentType, echo.HeaderAccessControlAllowOrigin, echo.HeaderAccessControlAllowHeaders, echo.HeaderAccessControlAllowMethods, echo.HeaderConnection, echo.HeaderOrigin, echo.HeaderXRequestedWith},
 		ExposeHeaders:    []string{echo.HeaderContentLength, echo.HeaderAccessControlAllowOrigin, echo.HeaderAccessControlAllowHeaders},
 		MaxAge:           172800,
-		AllowCredentials: true,
+		AllowCredentials: false,
 	})))
 	e.Use(echo_middleware.Gzip())
 	e.Use(echo_middleware.Recover())
 	e.Use(echo_middleware.Logger())
 
-	e.GET("/v1/sys/debug", v1.GetSystemConfigDebug) // //debug
+	// Debug endpoint moved inside v1SysGroup for JWT auth protection
 
-	e.GET("/v1/sys/version/check", v1.GetSystemCheckVersion)
-	e.GET("/v1/sys/version/current", func(ctx echo.Context) error {
-		return ctx.String(200, common.VERSION)
-	})
-	e.GET("/ping", func(ctx echo.Context) error {
-		return ctx.String(200, "pong")
-	})
-	e.GET("/v1/recover/:type", v1.GetRecoverStorage)
 	v1Group := e.Group("/v1")
 	//	e.Any("/v1/test", v1.CheckNetwork)
-	v1Group.Use(echo_middleware.JWTWithConfig(echo_middleware.JWTConfig{
+	v1Group.Use(echo_jwt.WithConfig(echo_jwt.Config{
 		Skipper: func(c echo.Context) bool {
-			return c.RealIP() == "::1" || c.RealIP() == "127.0.0.1"
+			return false // SECURITY: Always require JWT authentication
 		},
-		ParseTokenFunc: func(token string, c echo.Context) (interface{}, error) {
+		ParseTokenFunc: func(c echo.Context, token string) (interface{}, error) {
 			valid, claims, err := jwt.Validate(token, func() (*ecdsa.PublicKey, error) { return external.GetPublicKey(config.CommonInfo.RuntimePath) })
 			if err != nil || !valid {
 				return nil, echo.ErrUnauthorized
@@ -56,12 +108,7 @@ func InitV1Router() http.Handler {
 			return claims, nil
 		},
 		TokenLookupFuncs: []echo_middleware.ValuesExtractor{
-			func(ctx echo.Context) ([]string, error) {
-				if len(ctx.Request().Header.Get(echo.HeaderAuthorization)) > 0 {
-					return []string{ctx.Request().Header.Get(echo.HeaderAuthorization)}, nil
-				}
-				return []string{ctx.QueryParam("token")}, nil
-			},
+			tokenFromRequest,
 		},
 	}))
 	{
@@ -79,6 +126,7 @@ func InitV1Router() http.Handler {
 			v1SysGroup.POST("/ssh-login", v1.PostSshLogin)
 			// v1SysGroup.GET("/config", v1.GetSystemConfig) //delete
 			// v1SysGroup.POST("/config", v1.PostSetSystemConfig)
+			v1SysGroup.GET("/debug", v1.GetSystemConfigDebug)
 			v1SysGroup.GET("/logs", v1.GetCasaOSErrorLogs) // error/logs
 			// v1SysGroup.GET("/widget/config", v1.GetWidgetConfig)//delete
 			// v1SysGroup.POST("/widget/config", v1.PostSetWidgetConfig)//delete
@@ -99,6 +147,17 @@ func InitV1Router() http.Handler {
 			v1SysGroup.PUT("/state/:state", v1.PutSystemState)
 			v1SysGroup.GET("/entry", v1.GetSystemEntry)
 		}
+
+		// Version endpoints (moved from unauthenticated group — now require auth)
+		v1Group.GET("/version/check", v1.GetSystemCheckVersion)
+		v1Group.GET("/version/current", func(ctx echo.Context) error {
+			return ctx.String(200, common.VERSION)
+		})
+		// Ping and recover remain accessible without auth via the JWT skipper
+		v1Group.GET("/ping", func(ctx echo.Context) error {
+			return ctx.String(200, "pong")
+		})
+		v1Group.GET("/recover/:type", v1.GetRecoverStorage)
 		v1PortGroup := v1Group.Group("/port")
 		v1PortGroup.Use()
 		{
@@ -106,7 +165,7 @@ func InitV1Router() http.Handler {
 			v1PortGroup.GET("/state/:port", v1.PortCheck) // app/check/:port
 		}
 		v1FileGroup := v1Group.Group("/file")
-		v1FileGroup.Use()
+		v1FileGroup.Use(forceAuthMiddleware()) // Enforce auth even from localhost
 		{
 			v1FileGroup.GET("", v1.GetDownloadSingleFile) // download/:path
 			v1FileGroup.POST("", v1.PostCreateFile)
@@ -136,7 +195,7 @@ func InitV1Router() http.Handler {
 		}
 
 		v1FolderGroup := v1Group.Group("/folder")
-		v1FolderGroup.Use()
+		v1FolderGroup.Use(forceAuthMiddleware()) // Enforce auth even from localhost
 		{
 			v1FolderGroup.PUT("/name", v1.RenamePath)
 			v1FolderGroup.GET("", v1.DirPath)   ///file/dirpath
@@ -145,7 +204,7 @@ func InitV1Router() http.Handler {
 			v1FolderGroup.GET("/count", v1.GetFileCount)
 		}
 		v1BatchGroup := v1Group.Group("/batch")
-		v1BatchGroup.Use()
+		v1BatchGroup.Use(forceAuthMiddleware()) // Enforce auth even from localhost
 		{
 
 			v1BatchGroup.DELETE("", v1.DeleteFile) // file/delete
@@ -154,7 +213,7 @@ func InitV1Router() http.Handler {
 			v1BatchGroup.GET("", v1.GetDownloadFile)
 		}
 		v1ImageGroup := v1Group.Group("/image")
-		v1ImageGroup.Use()
+		v1ImageGroup.Use(forceAuthMiddleware()) // Enforce auth even from localhost
 		{
 			v1ImageGroup.GET("", v1.GetFileImage)
 		}
@@ -174,6 +233,8 @@ func InitV1Router() http.Handler {
 				v1SharesGroup.GET("", v1.GetSambaSharesList)
 				v1SharesGroup.POST("", v1.PostSambaSharesCreate)
 				v1SharesGroup.DELETE("/:id", v1.DeleteSambaShares)
+				v1SharesGroup.PUT("/:id/pause", v1.PauseSambaShare)
+				v1SharesGroup.PUT("/:id/resume", v1.ResumeSambaShare)
 				v1SharesGroup.GET("/status", v1.GetSambaStatus)
 			}
 		}

@@ -8,6 +8,9 @@ ExecStart=/usr/bin/casaos -c /etc/casaos/casaos.conf
 PIDFile=/var/run/casaos/casaos.pid
 Restart=always
 Type=notify
+# Docker 29+ requires API version >= 1.25; set minimum to avoid "failed to load apps" errors.
+# The real fix requires API version negotiation in CasaOS-AppManagement (see issue #2407).
+Environment=DOCKER_MIN_API_VERSION=1.24
 
 [Install]
 WantedBy=multi-user.target

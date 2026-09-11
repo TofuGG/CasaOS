@@ -66,7 +66,7 @@ func InitInfo() {
 		logger.Error("init info err", zap.Any("err", err))
 		return
 	}
-	file.WriteToFullPath(by, config.AppInfo.DBPath+"/baseinfo.conf", 0o666)
+	file.WriteToFullPath(by, config.AppInfo.DBPath+"/baseinfo.conf", 0o644)
 }
 
 func InitNetworkMount() {

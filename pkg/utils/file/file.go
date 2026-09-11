@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"io/ioutil"
 	"log"
 	"mime/multipart"
 	"os"
@@ -22,7 +21,7 @@ import (
 
 // GetSize get the file size
 func GetSize(f multipart.File) (int, error) {
-	content, err := ioutil.ReadAll(f)
+	content, err := io.ReadAll(f)
 	return len(content), err
 }
 
@@ -58,11 +57,11 @@ func IsNotExistMkDir(src string) error {
 
 // MkDir create a directory
 func MkDir(src string) error {
-	err := os.MkdirAll(src, os.ModePerm)
+	err := os.MkdirAll(src, 0o750)
 	if err != nil {
 		return err
 	}
-	os.Chmod(src, 0o777)
+	os.Chmod(src, 0o750)
 
 	return nil
 }
@@ -165,7 +164,7 @@ func CreateFile(path string) error {
 }
 
 func CreateFileAndWriteContent(path string, content string) error {
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE, 0o666)
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE, 0o600)
 	if err != nil {
 		return err
 	}
@@ -196,20 +195,39 @@ func ReadFullFile(path string) []byte {
 		return []byte("")
 	}
 	defer file.Close()
-	content, err := ioutil.ReadAll(file)
+	content, err := io.ReadAll(file)
 	if err != nil {
 		return []byte("")
 	}
 	return content
 }
 
+// copyFileContents copies the contents from src to dst, then preserves permissions.
+func copyFileContents(src, dst string) error {
+	srcfd, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer srcfd.Close()
+
+	dstfd, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer dstfd.Close()
+
+	if _, err = io.Copy(dstfd, srcfd); err != nil {
+		return err
+	}
+	srcinfo, err := os.Stat(src)
+	if err != nil {
+		return err
+	}
+	return os.Chmod(dst, srcinfo.Mode())
+}
+
 // File copies a single file from src to dst
 func CopyFile(src, dst, style string) error {
-	var err error
-	var srcfd *os.File
-	var dstfd *os.File
-	var srcinfo os.FileInfo
-
 	lastPath := src[strings.LastIndex(src, "/")+1:]
 
 	if !strings.HasSuffix(dst, "/") {
@@ -224,23 +242,7 @@ func CopyFile(src, dst, style string) error {
 		}
 	}
 
-	if srcfd, err = os.Open(src); err != nil {
-		return err
-	}
-	defer srcfd.Close()
-
-	if dstfd, err = os.Create(dst); err != nil {
-		return err
-	}
-	defer dstfd.Close()
-
-	if _, err = io.Copy(dstfd, srcfd); err != nil {
-		return err
-	}
-	if srcinfo, err = os.Stat(src); err != nil {
-		return err
-	}
-	return os.Chmod(dst, srcinfo.Mode())
+	return copyFileContents(src, dst)
 }
 
 /**
@@ -253,11 +255,6 @@ func CopyFile(src, dst, style string) error {
  * @router:
  */
 func CopySingleFile(src, dst, style string) error {
-	var err error
-	var srcfd *os.File
-	var dstfd *os.File
-	var srcinfo os.FileInfo
-
 	if Exists(dst) {
 		if style == "skip" {
 			return nil
@@ -266,23 +263,7 @@ func CopySingleFile(src, dst, style string) error {
 		}
 	}
 
-	if srcfd, err = os.Open(src); err != nil {
-		return err
-	}
-	defer srcfd.Close()
-
-	if dstfd, err = os.Create(dst); err != nil {
-		return err
-	}
-	defer dstfd.Close()
-
-	if _, err = io.Copy(dstfd, srcfd); err != nil {
-		return err
-	}
-	if srcinfo, err = os.Stat(src); err != nil {
-		return err
-	}
-	return os.Chmod(dst, srcinfo.Mode())
+	return copyFileContents(src, dst)
 }
 
 // Check for duplicate file names
@@ -299,7 +280,7 @@ func GetNoDuplicateFileName(fullPath string) string {
 // Dir copies a whole directory recursively
 func CopyDir(src string, dst string, style string) error {
 	var err error
-	var fds []os.FileInfo
+	var fds []os.DirEntry
 	var srcinfo os.FileInfo
 
 	if srcinfo, err = os.Stat(src); err != nil {
@@ -327,7 +308,7 @@ func CopyDir(src string, dst string, style string) error {
 	if err = os.MkdirAll(dst, srcinfo.Mode()); err != nil {
 		return err
 	}
-	if fds, err = ioutil.ReadDir(src); err != nil {
+	if fds, err = os.ReadDir(src); err != nil {
 		return err
 	}
 	for _, fd := range fds {
@@ -354,7 +335,7 @@ func WriteToPath(data []byte, path, name string) error {
 	} else {
 		fullPath += "/" + name
 	}
-	return WriteToFullPath(data, fullPath, 0o666)
+	return WriteToFullPath(data, fullPath, 0o600)
 }
 
 func WriteToFullPath(data []byte, fullPath string, perm fs.FileMode) error {
@@ -385,7 +366,7 @@ func SpliceFiles(dir, path string, length int, startPoint int) error {
 
 	file, _ := os.OpenFile(fullPath,
 		os.O_WRONLY|os.O_TRUNC|os.O_CREATE,
-		0o666,
+		0o600,
 	)
 
 	defer file.Close()
@@ -395,7 +376,7 @@ func SpliceFiles(dir, path string, length int, startPoint int) error {
 	// todo: here should have a goroutine to remove each partial file after it is read, to save disk space
 
 	for i := 0; i < length+startPoint-1; i++ {
-		data, err := ioutil.ReadFile(dir + "/" + strconv.Itoa(i+startPoint))
+		data, err := os.ReadFile(dir + "/" + strconv.Itoa(i+startPoint))
 		if err != nil {
 			return err
 		}

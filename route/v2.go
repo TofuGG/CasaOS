@@ -20,6 +20,7 @@ import (
 	"github.com/deepmap/oapi-codegen/pkg/middleware"
 	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/getkin/kin-openapi/openapi3filter"
+	echo_jwt "github.com/labstack/echo-jwt/v4"
 	"github.com/labstack/echo/v4"
 	echo_middleware "github.com/labstack/echo/v4/middleware"
 )
@@ -55,25 +56,34 @@ func InitV2Router() http.Handler {
 
 	e := echo.New()
 
+	// SECURITY: Never trust client-supplied X-Forwarded-For / X-Real-IP headers for
+	// remote-address determination. Extract the IP directly from the socket, so
+	// RealIP() cannot be spoofed.
+	e.IPExtractor = echo.ExtractIPDirect()
+
 	e.Use((echo_middleware.CORSWithConfig(echo_middleware.CORSConfig{
-		AllowOrigins:     []string{"*"},
+		AllowOrigins: []string{
+			"http://127.0.0.1:*",
+			"http://localhost:*",
+			"https://127.0.0.1:*",
+			"https://localhost:*",
+		},
 		AllowMethods:     []string{echo.POST, echo.GET, echo.OPTIONS, echo.PUT, echo.DELETE},
 		AllowHeaders:     []string{echo.HeaderAuthorization, echo.HeaderContentLength, echo.HeaderXCSRFToken, echo.HeaderContentType, echo.HeaderAccessControlAllowOrigin, echo.HeaderAccessControlAllowHeaders, echo.HeaderAccessControlAllowMethods, echo.HeaderConnection, echo.HeaderOrigin, echo.HeaderXRequestedWith},
 		ExposeHeaders:    []string{echo.HeaderContentLength, echo.HeaderAccessControlAllowOrigin, echo.HeaderAccessControlAllowHeaders},
 		MaxAge:           172800,
-		AllowCredentials: true,
+		AllowCredentials: false,
 	})))
 
 	e.Use(echo_middleware.Gzip())
 
 	e.Use(echo_middleware.Logger())
 
-	e.Use(echo_middleware.JWTWithConfig(echo_middleware.JWTConfig{
+	e.Use(echo_jwt.WithConfig(echo_jwt.Config{
 		Skipper: func(c echo.Context) bool {
-			return c.RealIP() == "::1" || c.RealIP() == "127.0.0.1"
-			// return true
+			return false // SECURITY: Always require JWT authentication
 		},
-		ParseTokenFunc: func(token string, c echo.Context) (interface{}, error) {
+		ParseTokenFunc: func(c echo.Context, token string) (interface{}, error) {
 			valid, claims, err := jwt.Validate(token, func() (*ecdsa.PublicKey, error) { return external.GetPublicKey(config.CommonInfo.RuntimePath) })
 			if err != nil || !valid {
 				return nil, echo.ErrUnauthorized
@@ -87,7 +97,7 @@ func InitV2Router() http.Handler {
 				if len(ctx.Request().Header.Get(echo.HeaderAuthorization)) > 0 {
 					return []string{ctx.Request().Header.Get(echo.HeaderAuthorization)}, nil
 				}
-				return []string{ctx.QueryParam("token")}, nil
+				return []string{""}, nil
 			},
 		},
 	}))
@@ -164,6 +174,14 @@ func InitFile() http.Handler {
 			return
 		}
 		filePath := r.URL.Query().Get("path")
+		// SECURITY: Use shared read-safety check instead of hardcoded blocklist
+		absPath := filepath.Clean(filePath)
+		if !file.IsPathSafeForRead(absPath) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusForbidden)
+			w.Write([]byte(`{"message": "access denied"}`))
+			return
+		}
 		fileName := path.Base(filePath)
 		w.Header().Add("Content-Disposition", "attachment; filename*=utf-8''"+url.PathEscape(fileName))
 		http.ServeFile(w, r, filePath)

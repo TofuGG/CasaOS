@@ -1,10 +1,11 @@
 package v1
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"log"
 	"net/http"
 	"net/url"
@@ -27,6 +28,7 @@ import (
 	"github.com/IceWhaleTech/CasaOS/pkg/utils"
 	"github.com/IceWhaleTech/CasaOS/pkg/utils/common_err"
 	"github.com/IceWhaleTech/CasaOS/pkg/utils/file"
+	"github.com/IceWhaleTech/CasaOS/pkg/utils/logutil"
 	"github.com/IceWhaleTech/CasaOS/service"
 	model2 "github.com/IceWhaleTech/CasaOS/service/model"
 
@@ -35,6 +37,19 @@ import (
 
 	"github.com/h2non/filetype"
 )
+
+// isPathSafeForWrite delegates to the shared hardened path check in
+// pkg/utils/file (symlink-resolved, multi-root allowlist, system-prefix
+// blocklist). Kept as a local wrapper for callers within this package.
+func isPathSafeForWrite(p string) bool {
+	return file.IsPathSafeForWrite(p)
+}
+
+// isPathSafeForRead delegates to the shared hardened read check in
+// pkg/utils/file (symlink-resolved, root allowlist, sensitive-file blocklist).
+func isPathSafeForRead(p string) bool {
+	return file.IsPathSafeForRead(p)
+}
 
 type ListReq struct {
 	model.PageReq
@@ -67,9 +82,16 @@ type FsListResp struct {
 var (
 	// 升级成 WebSocket 协议
 	upgraderFile = websocket.Upgrader{
-		// 允许CORS跨域请求
 		CheckOrigin: func(r *http.Request) bool {
-			return true
+			origin := r.Header.Get("Origin")
+			if origin == "" {
+				return true // Same-origin requests may not have Origin header
+			}
+			// Allow localhost variants
+			return strings.HasPrefix(origin, "http://127.0.0.1") ||
+				strings.HasPrefix(origin, "http://localhost") ||
+				strings.HasPrefix(origin, "https://127.0.0.1") ||
+				strings.HasPrefix(origin, "https://localhost")
 		},
 	}
 	conn *websocket.Conn
@@ -92,6 +114,12 @@ func GetFilerContent(ctx echo.Context) error {
 			Message: common_err.GetMsg(common_err.INVALID_PARAMS),
 		})
 	}
+	if !isPathSafeForRead(filePath) {
+		return ctx.JSON(http.StatusForbidden, model.Result{
+			Success: common_err.INVALID_PARAMS,
+			Message: "Access to this path is not permitted",
+		})
+	}
 	if !file.Exists(filePath) {
 		return ctx.JSON(common_err.SERVICE_ERROR, model.Result{
 			Success: common_err.FILE_DOES_NOT_EXIST,
@@ -99,12 +127,12 @@ func GetFilerContent(ctx echo.Context) error {
 		})
 	}
 	// 文件读取任务是将文件内容读取到内存中。
-	info, err := ioutil.ReadFile(filePath)
+	info, err := os.ReadFile(filePath)
 	if err != nil {
+		logger.Error("failed to read file", zap.Error(err), zap.String("path", logutil.SanitizeLogString(filePath)))
 		return ctx.JSON(common_err.SERVICE_ERROR, model.Result{
 			Success: common_err.FILE_READ_ERROR,
 			Message: common_err.GetMsg(common_err.FILE_READ_ERROR),
-			Data:    err.Error(),
 		})
 	}
 	result := string(info)
@@ -155,6 +183,11 @@ func GetDownloadFile(ctx echo.Context) error {
 	}
 	list := strings.Split(files, ",")
 	for _, v := range list {
+		if !file.IsPathSafeForRead(v) {
+			return ctx.JSON(http.StatusForbidden, model.Result{Success: common_err.INVALID_PARAMS, Message: "Access to this path is not permitted"})
+		}
+	}
+	for _, v := range list {
 		if !file.Exists(v) {
 			return ctx.JSON(common_err.SERVICE_ERROR, model.Result{
 				Success: common_err.FILE_DOES_NOT_EXIST,
@@ -199,10 +232,10 @@ func GetDownloadFile(ctx echo.Context) error {
 
 	err = ar.Create(ctx.Response().Writer)
 	if err != nil {
+		logger.Error("failed to create compression archive", zap.Error(err))
 		return ctx.JSON(common_err.SERVICE_ERROR, model.Result{
 			Success: common_err.SERVICE_ERROR,
 			Message: common_err.GetMsg(common_err.SERVICE_ERROR),
-			Data:    err.Error(),
 		})
 	}
 	defer ar.Close()
@@ -230,13 +263,19 @@ func GetDownloadSingleFile(ctx echo.Context) error {
 			Message: common_err.GetMsg(common_err.INVALID_PARAMS),
 		})
 	}
+	if !file.IsPathSafeForRead(filePath) {
+		return ctx.JSON(http.StatusForbidden, model.Result{Success: common_err.INVALID_PARAMS, Message: "Access to this path is not permitted"})
+	}
 	fileName := path.Base(filePath)
 	// c.Header("Content-Disposition", "inline")
 	ctx.Request().Header.Add("Content-Disposition", "attachment; filename*=utf-8''"+url2.PathEscape(fileName))
 
 	fi, err := os.Open(filePath)
 	if err != nil {
-		panic(err)
+		return ctx.JSON(common_err.SERVICE_ERROR, model.Result{
+			Success: common_err.FILE_DOES_NOT_EXIST,
+			Message: common_err.GetMsg(common_err.FILE_DOES_NOT_EXIST),
+		})
 	}
 
 	// We only have to pass the file header = first 261 bytes
@@ -285,7 +324,8 @@ func DirPath(ctx echo.Context) error {
 	req.Validate()
 	info, err := service.MyService.System().GetDirPath(req.Path)
 	if err != nil {
-		return ctx.JSON(common_err.SERVICE_ERROR, model.Result{Success: common_err.SERVICE_ERROR, Message: common_err.GetMsg(common_err.SERVICE_ERROR), Data: err.Error()})
+		logger.Error("failed to get dir path", zap.Error(err), zap.String("path", req.Path))
+		return ctx.JSON(common_err.SERVICE_ERROR, model.Result{Success: common_err.SERVICE_ERROR, Message: common_err.GetMsg(common_err.SERVICE_ERROR)})
 	}
 	shares := service.MyService.Shares().GetSharesList()
 	sharesMap := make(map[string]string)
@@ -324,8 +364,8 @@ func DirPath(ctx echo.Context) error {
 	}
 	// Hide the files or folders in operation
 	fileQueue := make(map[string]string)
-	if len(service.OpStrArr) > 0 {
-		for _, v := range service.OpStrArr {
+	if service.GetOpStrLen() > 0 {
+		for _, v := range service.GetOpStrCopy() {
 			v, ok := service.FileQueue.Load(v)
 			if !ok {
 				continue
@@ -385,13 +425,22 @@ func RenamePath(ctx echo.Context) error {
 	if len(op) == 0 || len(np) == 0 {
 		return ctx.JSON(common_err.CLIENT_ERROR, model.Result{Success: common_err.INVALID_PARAMS, Message: common_err.GetMsg(common_err.INVALID_PARAMS)})
 	}
+	if !file.IsPathSafeForWrite(op) || !file.IsPathSafeForWrite(np) {
+		return ctx.JSON(http.StatusForbidden, model.Result{Success: common_err.INVALID_PARAMS, Message: "Renaming this path is not permitted"})
+	}
+	if strings.Contains(np, "..") {
+		return ctx.JSON(http.StatusBadRequest, model.Result{Success: common_err.INVALID_PARAMS, Message: "Invalid new path"})
+	}
 	mounted := service.IsMounted(op)
 	if mounted {
 		return ctx.JSON(common_err.SERVICE_ERROR, model.Result{Success: common_err.MOUNTED_DIRECTIORIES, Message: common_err.GetMsg(common_err.MOUNTED_DIRECTIORIES), Data: common_err.GetMsg(common_err.MOUNTED_DIRECTIORIES)})
 	}
 
 	success, err := service.MyService.System().RenameFile(op, np)
-	return ctx.JSON(common_err.SUCCESS, model.Result{Success: success, Message: common_err.GetMsg(success), Data: err})
+	if err != nil {
+		logger.Error("failed to rename file", zap.Error(err), zap.String("old_path", logutil.SanitizeLogString(op)), zap.String("new_path", logutil.SanitizeLogString(np)))
+	}
+	return ctx.JSON(common_err.SUCCESS, model.Result{Success: success, Message: common_err.GetMsg(success)})
 }
 
 // @Summary create folder
@@ -409,6 +458,12 @@ func MkdirAll(ctx echo.Context) error {
 	var code int
 	if len(path) == 0 {
 		return ctx.JSON(common_err.CLIENT_ERROR, model.Result{Success: common_err.INVALID_PARAMS, Message: common_err.GetMsg(common_err.INVALID_PARAMS)})
+	}
+	if !isPathSafeForWrite(path) {
+		return ctx.JSON(http.StatusForbidden, model.Result{
+			Success: common_err.INVALID_PARAMS,
+			Message: "Creating directories at this path is not permitted",
+		})
 	}
 	// decodedPath, err := url.QueryUnescape(path)
 	// if err != nil {
@@ -434,6 +489,12 @@ func PostCreateFile(ctx echo.Context) error {
 	var code int
 	if len(path) == 0 {
 		return ctx.JSON(common_err.CLIENT_ERROR, model.Result{Success: common_err.INVALID_PARAMS, Message: common_err.GetMsg(common_err.INVALID_PARAMS)})
+	}
+	if !isPathSafeForWrite(path) {
+		return ctx.JSON(http.StatusForbidden, model.Result{
+			Success: common_err.INVALID_PARAMS,
+			Message: "Creating files at this path is not permitted",
+		})
 	}
 	// decodedPath, err := url.QueryUnescape(path)
 	// if err != nil {
@@ -496,20 +557,33 @@ func PostFileUpload(ctx echo.Context) error {
 	dirPath := ""
 	path := ctx.FormValue("path")
 
+	// SECURITY: Validate upload destination path
+	if !file.IsPathSafeForWrite(path) {
+		return ctx.JSON(http.StatusForbidden, model.Result{Success: common_err.INVALID_PARAMS, Message: "Upload to this path is not permitted"})
+	}
+	if strings.Contains(relative, "..") {
+		return ctx.JSON(http.StatusBadRequest, model.Result{Success: common_err.INVALID_PARAMS, Message: "Invalid relative path"})
+	}
+	if !file.IsPathSafeForWrite(filepath.Join(path, relative)) {
+		return ctx.JSON(http.StatusForbidden, model.Result{Success: common_err.INVALID_PARAMS, Message: "Upload to this path is not permitted"})
+	}
+
 	hash := file.GetHashByContent([]byte(fileName))
 
 	if len(path) == 0 {
 		logger.Error("path should not be empty")
 		return ctx.JSON(http.StatusBadRequest, model.Result{Success: common_err.INVALID_PARAMS, Message: common_err.GetMsg(common_err.INVALID_PARAMS)})
 	}
-	tempDir := filepath.Join(path, ".temp", hash+strconv.Itoa(totalChunks)) + "/"
+	randBytes := make([]byte, 8)
+	rand.Read(randBytes)
+	tempDir := filepath.Join(path, ".temp", hash+strconv.Itoa(totalChunks)+"_"+hex.EncodeToString(randBytes)) + "/"
 
 	if fileName != relative {
 		dirPath = strings.TrimSuffix(relative, fileName)
 		tempDir += dirPath
 		if err := file.MkDir(path + "/" + dirPath); err != nil {
 			logger.Error("error when trying to create `"+path+"/"+dirPath+"`", zap.Error(err))
-			return ctx.JSON(http.StatusInternalServerError, model.Result{Success: common_err.SERVICE_ERROR, Message: err.Error()})
+			return ctx.JSON(http.StatusInternalServerError, model.Result{Success: common_err.SERVICE_ERROR, Message: common_err.GetMsg(common_err.SERVICE_ERROR)})
 		}
 	}
 
@@ -518,39 +592,39 @@ func PostFileUpload(ctx echo.Context) error {
 	if !file.CheckNotExist(tempDir + chunkNumber) {
 		if err := file.RMDir(tempDir + chunkNumber); err != nil {
 			logger.Error("error when trying to remove existing `"+tempDir+chunkNumber+"`", zap.Error(err))
-			return ctx.JSON(http.StatusInternalServerError, model.Result{Success: common_err.SERVICE_ERROR, Message: err.Error()})
+			return ctx.JSON(http.StatusInternalServerError, model.Result{Success: common_err.SERVICE_ERROR, Message: common_err.GetMsg(common_err.SERVICE_ERROR)})
 		}
 	}
 
 	if totalChunks > 1 {
 		if err := file.IsNotExistMkDir(tempDir); err != nil {
 			logger.Error("error when trying to create `"+tempDir+"`", zap.Error(err))
-			return ctx.JSON(http.StatusInternalServerError, model.Result{Success: common_err.SERVICE_ERROR, Message: err.Error()})
+			return ctx.JSON(http.StatusInternalServerError, model.Result{Success: common_err.SERVICE_ERROR, Message: common_err.GetMsg(common_err.SERVICE_ERROR)})
 		}
 
 		out, err := os.OpenFile(tempDir+chunkNumber, os.O_WRONLY|os.O_CREATE, 0o644)
 		if err != nil {
 			logger.Error("error when trying to open `"+tempDir+chunkNumber+"` for creation", zap.Error(err))
-			return ctx.JSON(http.StatusInternalServerError, model.Result{Success: common_err.SERVICE_ERROR, Message: err.Error()})
+			return ctx.JSON(http.StatusInternalServerError, model.Result{Success: common_err.SERVICE_ERROR, Message: common_err.GetMsg(common_err.SERVICE_ERROR)})
 		}
 
 		defer out.Close()
 
 		if _, err := io.Copy(out, f); err != nil { // recommend to use https://github.com/iceber/iouring-go for faster copy
 			logger.Error("error when trying to write to `"+tempDir+chunkNumber+"`", zap.Error(err))
-			return ctx.JSON(http.StatusInternalServerError, model.Result{Success: common_err.SERVICE_ERROR, Message: err.Error()})
+			return ctx.JSON(http.StatusInternalServerError, model.Result{Success: common_err.SERVICE_ERROR, Message: common_err.GetMsg(common_err.SERVICE_ERROR)})
 		}
 
-		fileNum, err := ioutil.ReadDir(tempDir)
+		fileNum, err := os.ReadDir(tempDir)
 		if err != nil {
 			logger.Error("error when trying to read number of files under `"+tempDir+"`", zap.Error(err))
-			return ctx.JSON(http.StatusInternalServerError, model.Result{Success: common_err.SERVICE_ERROR, Message: err.Error()})
+			return ctx.JSON(http.StatusInternalServerError, model.Result{Success: common_err.SERVICE_ERROR, Message: common_err.GetMsg(common_err.SERVICE_ERROR)})
 		}
 
 		if totalChunks == len(fileNum) {
 			if err := file.SpliceFiles(tempDir, path, totalChunks, 1); err != nil {
 				logger.Error("error when trying to splice files under `"+tempDir+"`", zap.Error(err))
-				return ctx.JSON(http.StatusInternalServerError, model.Result{Success: common_err.SERVICE_ERROR, Message: err.Error()})
+				return ctx.JSON(http.StatusInternalServerError, model.Result{Success: common_err.SERVICE_ERROR, Message: common_err.GetMsg(common_err.SERVICE_ERROR)})
 			}
 			go func() {
 				time.Sleep(11 * time.Second)
@@ -559,18 +633,18 @@ func PostFileUpload(ctx echo.Context) error {
 				}
 			}()
 		}
-	} else {
+		} else {
 		out, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE, 0o644)
 		if err != nil {
 			logger.Error("error when trying to open `"+path+"` for creation", zap.Error(err))
-			return ctx.JSON(http.StatusInternalServerError, model.Result{Success: common_err.SERVICE_ERROR, Message: err.Error()})
+			return ctx.JSON(http.StatusInternalServerError, model.Result{Success: common_err.SERVICE_ERROR, Message: common_err.GetMsg(common_err.SERVICE_ERROR)})
 		}
 
 		defer out.Close()
 
 		if _, err := io.Copy(out, f); err != nil { // recommend to use https://github.com/iceber/iouring-go for faster copy
 			logger.Error("error when trying to write to `"+path+"`", zap.Error(err))
-			return ctx.JSON(http.StatusInternalServerError, model.Result{Success: common_err.SERVICE_ERROR, Message: common_err.GetMsg(common_err.SERVICE_ERROR), Data: err.Error()})
+			return ctx.JSON(http.StatusInternalServerError, model.Result{Success: common_err.SERVICE_ERROR, Message: common_err.GetMsg(common_err.SERVICE_ERROR)})
 		}
 	}
 	return ctx.JSON(http.StatusOK, model.Result{Success: common_err.SUCCESS, Message: common_err.GetMsg(common_err.SUCCESS)})
@@ -674,8 +748,8 @@ func PostOperateFileOrDir(ctx echo.Context) error {
 
 	uid := uuid.NewString()
 	service.FileQueue.Store(uid, list)
-	service.OpStrArr = append(service.OpStrArr, uid)
-	if len(service.OpStrArr) == 1 {
+	service.AppendOpStr(uid)
+	if service.GetOpStrLen() == 1 {
 		go service.ExecOpFile()
 		go service.CheckFileStatus()
 
@@ -700,9 +774,15 @@ func DeleteFile(ctx echo.Context) error {
 	if len(paths) == 0 {
 		return ctx.JSON(common_err.CLIENT_ERROR, model.Result{Success: common_err.INVALID_PARAMS, Message: common_err.GetMsg(common_err.INVALID_PARAMS)})
 	}
-	//	path := ctx.QueryParam("path")
-
-	//	paths := strings.Split(path, ",")
+	// Validate all paths are safe before deleting any
+	for _, v := range paths {
+		if !isPathSafeForWrite(v) {
+			return ctx.JSON(http.StatusForbidden, model.Result{
+				Success: common_err.INVALID_PARAMS,
+				Message: "Deletion of this path is not permitted",
+			})
+		}
+	}
 	for _, v := range paths {
 		mounted := service.IsMounted(v)
 		if mounted {
@@ -713,7 +793,8 @@ func DeleteFile(ctx echo.Context) error {
 	for _, v := range paths {
 		err := os.RemoveAll(v)
 		if err != nil {
-			return ctx.JSON(common_err.SERVICE_ERROR, model.Result{Success: common_err.FILE_DELETE_ERROR, Message: common_err.GetMsg(common_err.FILE_DELETE_ERROR), Data: err})
+			logger.Error("failed to delete file", zap.Error(err), zap.String("path", logutil.SanitizeLogString(v)))
+			return ctx.JSON(common_err.SERVICE_ERROR, model.Result{Success: common_err.FILE_DELETE_ERROR, Message: common_err.GetMsg(common_err.FILE_DELETE_ERROR)})
 		}
 	}
 
@@ -735,6 +816,12 @@ func PutFileContent(ctx echo.Context) error {
 
 	// path := ctx.FormValue("path")
 	// content := ctx.FormValue("content")
+	if !isPathSafeForWrite(fi.FilePath) {
+		return ctx.JSON(http.StatusForbidden, model.Result{
+			Success: common_err.INVALID_PARAMS,
+			Message: "Writing to this path is not permitted",
+		})
+	}
 	if !file.Exists(fi.FilePath) {
 		return ctx.JSON(common_err.SERVICE_ERROR, model.Result{Success: common_err.FILE_ALREADY_EXISTS, Message: common_err.GetMsg(common_err.FILE_ALREADY_EXISTS)})
 	}
@@ -745,12 +832,13 @@ func PutFileContent(ctx echo.Context) error {
 	}
 	fm := f.Mode()
 	if err != nil {
-		return ctx.JSON(common_err.SERVICE_ERROR, model.Result{Success: common_err.FILE_DELETE_ERROR, Message: common_err.GetMsg(common_err.FILE_DELETE_ERROR), Data: err})
+		return ctx.JSON(common_err.SERVICE_ERROR, model.Result{Success: common_err.FILE_DELETE_ERROR, Message: common_err.GetMsg(common_err.FILE_DELETE_ERROR)})
 	}
 	os.OpenFile(fi.FilePath, os.O_CREATE, fm)
 	err = file.WriteToFullPath([]byte(fi.FileContent), fi.FilePath, fm)
 	if err != nil {
-		return ctx.JSON(common_err.SERVICE_ERROR, model.Result{Success: common_err.SERVICE_ERROR, Message: common_err.GetMsg(common_err.SERVICE_ERROR), Data: err.Error()})
+		logger.Error("failed to write file content", zap.Error(err), zap.String("path", fi.FilePath))
+		return ctx.JSON(common_err.SERVICE_ERROR, model.Result{Success: common_err.SERVICE_ERROR, Message: common_err.GetMsg(common_err.SERVICE_ERROR)})
 	}
 	return ctx.JSON(common_err.SUCCESS, model.Result{Success: common_err.SUCCESS, Message: common_err.GetMsg(common_err.SUCCESS)})
 }
@@ -767,24 +855,30 @@ func PutFileContent(ctx echo.Context) error {
 func GetFileImage(ctx echo.Context) error {
 	t := ctx.QueryParam("type")
 	path := ctx.QueryParam("path")
+	if !file.IsPathSafeForRead(path) {
+		return ctx.JSON(http.StatusForbidden, model.Result{Success: common_err.INVALID_PARAMS, Message: "Access to this path is not permitted"})
+	}
 	if !file.Exists(path) {
 		return ctx.JSON(common_err.SERVICE_ERROR, model.Result{Success: common_err.FILE_ALREADY_EXISTS, Message: common_err.GetMsg(common_err.FILE_ALREADY_EXISTS)})
 	}
 	if t == "thumbnail" {
 		f, err := file.GetImage(path, 100, 0)
 		if err != nil {
-			return ctx.JSON(common_err.SERVICE_ERROR, model.Result{Success: common_err.SERVICE_ERROR, Message: common_err.GetMsg(common_err.SERVICE_ERROR), Data: err.Error()})
+			logger.Error("failed to get image thumbnail", zap.Error(err), zap.String("path", path))
+			return ctx.JSON(common_err.SERVICE_ERROR, model.Result{Success: common_err.SERVICE_ERROR, Message: common_err.GetMsg(common_err.SERVICE_ERROR)})
 		}
 		ctx.Response().Writer.Write(f)
 	}
 	f, err := os.Open(path)
 	if err != nil {
-		return ctx.JSON(common_err.SERVICE_ERROR, model.Result{Success: common_err.SERVICE_ERROR, Message: common_err.GetMsg(common_err.SERVICE_ERROR), Data: err.Error()})
+		logger.Error("failed to open image file", zap.Error(err), zap.String("path", path))
+		return ctx.JSON(common_err.SERVICE_ERROR, model.Result{Success: common_err.SERVICE_ERROR, Message: common_err.GetMsg(common_err.SERVICE_ERROR)})
 	}
 	defer f.Close()
-	data, err := ioutil.ReadAll(f)
+	data, err := io.ReadAll(f)
 	if err != nil {
-		return ctx.JSON(common_err.SERVICE_ERROR, model.Result{Success: common_err.SERVICE_ERROR, Message: common_err.GetMsg(common_err.SERVICE_ERROR), Data: err.Error()})
+		logger.Error("failed to read image file", zap.Error(err), zap.String("path", path))
+		return ctx.JSON(common_err.SERVICE_ERROR, model.Result{Success: common_err.SERVICE_ERROR, Message: common_err.GetMsg(common_err.SERVICE_ERROR)})
 	}
 	ctx.Response().Writer.Write(data)
 	return nil
@@ -794,17 +888,17 @@ func DeleteOperateFileOrDir(ctx echo.Context) error {
 	id := ctx.Param("id")
 	if id == "0" {
 		service.FileQueue = sync.Map{}
-		service.OpStrArr = []string{}
+		service.ClearOpStr()
 	} else {
 
 		service.FileQueue.Delete(id)
 		tempList := []string{}
-		for _, v := range service.OpStrArr {
+		for _, v := range service.GetOpStrCopy() {
 			if v != id {
 				tempList = append(tempList, v)
 			}
 		}
-		service.OpStrArr = tempList
+		service.SetOpStr(tempList)
 
 	}
 
@@ -818,7 +912,8 @@ func GetSize(ctx echo.Context) error {
 	path := json["path"]
 	size, err := file.GetFileOrDirSize(path)
 	if err != nil {
-		return ctx.JSON(common_err.SERVICE_ERROR, model.Result{Success: common_err.SERVICE_ERROR, Message: common_err.GetMsg(common_err.SERVICE_ERROR), Data: err.Error()})
+		logger.Error("failed to get file size", zap.Error(err), zap.String("path", path))
+		return ctx.JSON(common_err.SERVICE_ERROR, model.Result{Success: common_err.SERVICE_ERROR, Message: common_err.GetMsg(common_err.SERVICE_ERROR)})
 	}
 	return ctx.JSON(common_err.SUCCESS, model.Result{Success: common_err.SUCCESS, Message: common_err.GetMsg(common_err.SUCCESS), Data: size})
 }
@@ -827,9 +922,10 @@ func GetFileCount(ctx echo.Context) error {
 	json := make(map[string]string)
 	ctx.Bind(&json)
 	path := json["path"]
-	list, err := ioutil.ReadDir(path)
+	list, err := os.ReadDir(path)
 	if err != nil {
-		return ctx.JSON(common_err.SERVICE_ERROR, model.Result{Success: common_err.SERVICE_ERROR, Message: common_err.GetMsg(common_err.SERVICE_ERROR), Data: err.Error()})
+		logger.Error("failed to read directory", zap.Error(err), zap.String("path", path))
+		return ctx.JSON(common_err.SERVICE_ERROR, model.Result{Success: common_err.SERVICE_ERROR, Message: common_err.GetMsg(common_err.SERVICE_ERROR)})
 	}
 	return ctx.JSON(common_err.SUCCESS, model.Result{Success: common_err.SUCCESS, Message: common_err.GetMsg(common_err.SUCCESS), Data: len(list)})
 }
@@ -843,6 +939,8 @@ type CenterHandler struct {
 	unregister chan *Client
 	// 用户集合，每个用户本身也在跑两个协程，监听用户的读、写的状态
 	clients map[string]*Client
+	// 保护 clients map 的并发读写
+	clientsMu sync.RWMutex
 }
 
 type Client struct {
@@ -901,16 +999,21 @@ func ConnectWebSocket(ctx echo.Context) error {
 	}
 
 	cookie := http.Cookie{
-		Name:  "peerid",
-		Value: key,
-		Path:  "/",
+		Name:     "peerid",
+		Value:    key,
+		Path:     "/",
+		HttpOnly: true,
+		SameSite: http.SameSiteStrictMode,
 	}
 	http.SetCookie(writer, &cookie)
 	if len(list) > 10 {
 		kickoutList := []Client{}
 		count := len(list) - 10
 		for i := len(list) - 1; count > 0 && i > -1; i-- {
-			if _, ok := handler.clients[list[i].ID]; !ok {
+			handler.clientsMu.RLock()
+			_, ok := handler.clients[list[i].ID]
+			handler.clientsMu.RUnlock()
+			if !ok {
 				count--
 				kickoutList = append(kickoutList, Client{ID: list[i].ID, Name: service.GetNameByDB(list[i]), IP: list[i].IP})
 				service.MyService.Peer().DeletePeer(list[i].ID)
@@ -935,16 +1038,20 @@ func ConnectWebSocket(ctx echo.Context) error {
 	pmsg["peer"] = currentPeer
 	pby, err := json.Marshal(pmsg)
 	fmt.Println(err)
+	handler.clientsMu.RLock()
 	for _, v := range handler.clients {
 		v.send <- pby
 	}
+	handler.clientsMu.RUnlock()
 	// client.handler.broadcast <- pby
 	clients := []PeerModel{}
+	handler.clientsMu.RLock()
 	for _, v := range client.handler.clients {
 		if _, ok := handler.clients[v.ID]; ok {
 			clients = append(clients, PeerModel{ID: v.ID, Name: v.Name, RtcSupported: v.RtcSupported})
 		}
 	}
+	handler.clientsMu.RUnlock()
 
 	other := make(map[string]interface{})
 	other["type"] = "peers"
@@ -1000,17 +1107,28 @@ func init() {
 }
 
 func (c *Client) writePump() {
+	ticker := time.NewTicker(30 * time.Second)
 	defer func() {
+		ticker.Stop()
 		c.handler.unregister <- c
-
 		c.conn.Close()
 	}()
 	for {
-		// 广播推过来的新消息，马上通过websocket推给自己
-		message, _ := <-c.send
-		fmt.Println("推送消息", string(message), "1")
-		if err := c.conn.WriteMessage(websocket.TextMessage, message); err != nil {
-			return
+		select {
+		case message, ok := <-c.send:
+			c.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+			if !ok {
+				c.conn.WriteMessage(websocket.CloseMessage, []byte{})
+				return
+			}
+			if err := c.conn.WriteMessage(websocket.TextMessage, message); err != nil {
+				return
+			}
+		case <-ticker.C:
+			c.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+			if err := c.conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+				return
+			}
 		}
 	}
 }
@@ -1062,8 +1180,10 @@ func (c *Client) readPump() {
 		to := gjson.GetBytes(message, "to")
 
 		if len(to.String()) > 0 {
-			toC := c.handler.clients[to.String()]
-			if toC == nil {
+c.handler.clientsMu.RLock()
+		toC := c.handler.clients[to.String()]
+		c.handler.clientsMu.RUnlock()
+		if toC == nil {
 				continue
 			}
 			data := map[string]interface{}{}
@@ -1084,17 +1204,23 @@ func (ch *CenterHandler) monitoring() {
 		select {
 		// 注册，新用户连接过来会推进注册通道，这里接收推进来的用户指针
 		case client := <-ch.register:
+			ch.clientsMu.Lock()
 			ch.clients[client.ID] = client
+			ch.clientsMu.Unlock()
 			// 注销，关闭连接或连接异常会将用户推出群聊
 		case client := <-ch.unregister:
+			ch.clientsMu.Lock()
 			delete(ch.clients, client.ID)
+			ch.clientsMu.Unlock()
 			// 消息，监听到有新消息到来
 		case message := <-ch.broadcast:
 			println("消息来了，message：" + string(message))
 			// 推送给每个用户的通道，每个用户都有跑协程起了writePump的监听
+			ch.clientsMu.RLock()
 			for _, client := range ch.clients {
 				client.send <- message
 			}
+			ch.clientsMu.RUnlock()
 		}
 	}
 }
@@ -1102,7 +1228,10 @@ func (ch *CenterHandler) monitoring() {
 func GetPeers(ctx echo.Context) error {
 	peers := service.MyService.Peer().GetPeers()
 	for i := 0; i < len(peers); i++ {
-		if _, ok := handler.clients[peers[i].ID]; ok {
+		handler.clientsMu.RLock()
+		_, ok := handler.clients[peers[i].ID]
+		handler.clientsMu.RUnlock()
+		if ok {
 			peers[i].Online = true
 		}
 	}

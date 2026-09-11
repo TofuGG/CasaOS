@@ -11,6 +11,8 @@
 package service
 
 import (
+	"sync"
+
 	"github.com/IceWhaleTech/CasaOS-Common/external"
 	"github.com/IceWhaleTech/CasaOS/codegen/message_bus"
 	"github.com/IceWhaleTech/CasaOS/pkg/config"
@@ -26,9 +28,60 @@ var (
 )
 
 var (
+	wsConnsMu      sync.Mutex
 	WebSocketConns []*websocket.Conn
 	SocketRun      bool
 )
+
+func AddWebSocketConn(conn *websocket.Conn) {
+	wsConnsMu.Lock()
+	defer wsConnsMu.Unlock()
+	WebSocketConns = append(WebSocketConns, conn)
+}
+
+func CleanDeadWebSocketConns() {
+	wsConnsMu.Lock()
+	defer wsConnsMu.Unlock()
+	var temp []*websocket.Conn
+	for _, v := range WebSocketConns {
+		// We can't check if conn is alive without writing, so just keep all
+		// The caller will handle dead connections
+		temp = append(temp, v)
+	}
+	WebSocketConns = temp
+}
+
+func GetWebSocketConnsCopy() []*websocket.Conn {
+	wsConnsMu.Lock()
+	defer wsConnsMu.Unlock()
+	cp := make([]*websocket.Conn, len(WebSocketConns))
+	copy(cp, WebSocketConns)
+	return cp
+}
+
+func SetWebSocketConns(conns []*websocket.Conn) {
+	wsConnsMu.Lock()
+	defer wsConnsMu.Unlock()
+	WebSocketConns = conns
+}
+
+func GetWebSocketConnsLen() int {
+	wsConnsMu.Lock()
+	defer wsConnsMu.Unlock()
+	return len(WebSocketConns)
+}
+
+func SetSocketRun(run bool) {
+	wsConnsMu.Lock()
+	defer wsConnsMu.Unlock()
+	SocketRun = run
+}
+
+func GetSocketRun() bool {
+	wsConnsMu.Lock()
+	defer wsConnsMu.Unlock()
+	return SocketRun
+}
 
 type Repository interface {
 	Casa() CasaService

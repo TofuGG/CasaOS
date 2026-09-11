@@ -12,6 +12,7 @@ package service
 
 import (
 	"fmt"
+	"os"
 
 	"github.com/IceWhaleTech/CasaOS/service/model"
 	model2 "github.com/IceWhaleTech/CasaOS/service/model"
@@ -63,16 +64,30 @@ func (s *connectionsStruct) DeleteConnection(id string) {
 }
 
 func (s *connectionsStruct) MountSmaba(username, host, directory, port, mountPoint, password string) error {
-	err := unix.Mount(
+	// SECURITY: Use credentials file instead of inline password to avoid exposure in /proc/mounts
+	credFile, err := os.CreateTemp("", "smb-cred-")
+	if err != nil {
+		return fmt.Errorf("failed to create credentials file: %w", err)
+	}
+	defer os.Remove(credFile.Name())
+
+	credContent := fmt.Sprintf("username=%s\npassword=%s\n", username, password)
+	if _, err := credFile.WriteString(credContent); err != nil {
+		credFile.Close()
+		return err
+	}
+	credFile.Close()
+	os.Chmod(credFile.Name(), 0o600)
+
+	mountOpts := fmt.Sprintf("credentials=%s", credFile.Name())
+	err = unix.Mount(
 		fmt.Sprintf("//%s/%s", host, directory),
 		mountPoint,
 		"cifs",
 		unix.MS_NOATIME|unix.MS_NODEV|unix.MS_NOSUID,
-		fmt.Sprintf("username=%s,password=%s", username, password),
+		mountOpts,
 	)
 	return err
-	// str := command2.ExecResultStr("source " + config.AppInfo.ShellPath + "/helper.sh ;MountCIFS " + username + " " + host + " " + directory + " " + port + " " + mountPoint + " " + password)
-	// return str
 }
 
 func (s *connectionsStruct) UnmountSmaba(mountPoint string) error {

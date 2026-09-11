@@ -194,6 +194,17 @@ We believe that through community-driven collaborative innovation and open commu
 
 [![Discord Card](https://discordapp.com/api/guilds/884667213326463016/widget.png?style=banner2)](https://discord.gg/knqAbbBbeX)
 
+## Security
+
+CasaOS's own services have been hardened against remote- and local-attacker classes. A summary of the fixes in this repository:
+
+| # | Fix | Area |
+|---|-----|------|
+| 1 | `echo.ExtractIPDirect()` — client-supplied `X-Forwarded-For` / `X-Real-IP` never trusted for address determination (closes IP-based auth bypasses) | `route/v1.go`, `route/v2.go` |
+| 2–4 | Path traversal + symlink escapes — `pkg/utils/file/pathsafe.go` rewritten: resolved paths (`filepath.EvalSymlinks`) must live under an allowlist of mount roots (`$HOME`, `/DATA`, `/mnt`, `/media`, `/tmp`, `/var/lib/casaos`); wildcard & recursive writes denied; sensitive reads (`.ssh`, `.aws`, credentials) blocked | `pkg/utils/file/pathsafe.go`, `route/v1/file.go` |
+| 5 | SSH credentials moved from URL query string into the first WebSocket message; `?token=` retained only for the browser WebSocket routes | `route/v1/ssh.go`, UI `TerminalCard.vue` |
+| 6 | Update/download pipeline — URL domain allowlist (`get.casaos.io`), `curl` fetch to a temp file with `--proto '=https' --tlsv1.2`, sanity checks before execution | `service/system.go` |
+
 ## Contributing
 
 CasaOS is a community-driven open source project and the people involved are CasaOS users. That means CasaOS will always need contributions from community members just like you!

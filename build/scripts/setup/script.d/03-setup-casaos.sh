@@ -13,8 +13,15 @@ __get_setup_script_directory_by_os_release() {
 		# shellcheck source=/dev/null
 		{
 			source /etc/os-release
+
+			# If VERSION_CODENAME is missing (e.g., Ubuntu 26+ "resolute"), resolve it from ID
+			if [[ -z "${VERSION_CODENAME}" ]]; then
+				# Try to get codename from lsb_release, or fall back to ID
+				VERSION_CODENAME=$(lsb_release -cs 2>/dev/null || true)
+			fi
+
 			{
-				pushd "${ID}"/"${VERSION_CODENAME}" >/dev/null
+				[[ -n "${VERSION_CODENAME}" ]] && pushd "${ID}"/"${VERSION_CODENAME}" >/dev/null
 			} || {
 				pushd "${ID}" >/dev/null
 			} || {

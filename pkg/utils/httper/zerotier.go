@@ -2,13 +2,15 @@ package httper
 
 import (
 	"fmt"
-	"io/ioutil"
+	"io"
 	"net/http"
+	"os"
 	"strings"
+	"time"
 )
 
 func ZTGet(url string) ([]byte, error) {
-	port, err := ioutil.ReadFile("/var/lib/zerotier-one/zerotier-one.port")
+	port, err := os.ReadFile("/var/lib/zerotier-one/zerotier-one.port")
 	if err != nil {
 		return nil, err
 	}
@@ -23,27 +25,27 @@ func ZTGet(url string) ([]byte, error) {
 	}
 
 	// Add the X-ZT1-AUTH header
-	authToken, err := ioutil.ReadFile("/var/lib/zerotier-one/authtoken.secret")
+	authToken, err := os.ReadFile("/var/lib/zerotier-one/authtoken.secret")
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("X-ZT1-AUTH", strings.TrimSpace(string(authToken)))
 
-	client := http.Client{}
+	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
 
-	respBody, err := ioutil.ReadAll(resp.Body)
+	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, err
 	}
 	return respBody, nil
 }
 func ZTPost(url string, body string) ([]byte, error) {
-	port, err := ioutil.ReadFile("/var/lib/zerotier-one/zerotier-one.port")
+	port, err := os.ReadFile("/var/lib/zerotier-one/zerotier-one.port")
 	if err != nil {
 		return nil, err
 	}
@@ -57,20 +59,20 @@ func ZTPost(url string, body string) ([]byte, error) {
 	}
 
 	// Add the X-ZT1-AUTH header
-	authToken, err := ioutil.ReadFile("/var/lib/zerotier-one/authtoken.secret")
+	authToken, err := os.ReadFile("/var/lib/zerotier-one/authtoken.secret")
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("X-ZT1-AUTH", strings.TrimSpace(string(authToken)))
 
-	client := http.Client{}
+	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
 
-	respBody, err := ioutil.ReadAll(resp.Body)
+	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, err
 	}

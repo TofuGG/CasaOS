@@ -2,9 +2,12 @@ package v2
 
 import (
 	"net/http"
+	"path/filepath"
 	"strconv"
+	"strings"
 
 	"github.com/IceWhaleTech/CasaOS/codegen"
+	"github.com/IceWhaleTech/CasaOS/pkg/utils/file"
 	"github.com/labstack/echo/v4"
 )
 
@@ -60,6 +63,18 @@ func (c *CasaOS) PostUploadFile(ctx echo.Context) error {
 	identifier := ctx.FormValue("identifier")
 	fileName := ctx.FormValue("filename")
 	relativePath := ctx.FormValue("relativePath")
+
+	// SECURITY: Validate upload destination path
+	if !file.IsPathSafeForWrite(path) {
+		return ctx.JSON(http.StatusForbidden, map[string]string{"message": "upload to this path is not permitted"})
+	}
+	if strings.Contains(relativePath, "..") {
+		return ctx.JSON(http.StatusBadRequest, map[string]string{"message": "invalid relativePath"})
+	}
+	if !file.IsPathSafeForWrite(filepath.Join(path, relativePath)) {
+		return ctx.JSON(http.StatusForbidden, map[string]string{"message": "upload to this path is not permitted"})
+	}
+
 	bin, err := ctx.FormFile("file")
 
 	if err != nil {

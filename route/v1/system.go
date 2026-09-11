@@ -1,12 +1,12 @@
 package v1
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
-	"io/ioutil"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"runtime"
 	"strconv"
@@ -137,7 +137,7 @@ func PutCasaOSPort(ctx echo.Context) error {
 		return ctx.JSON(common_err.SERVICE_ERROR,
 			model.Result{
 				Success: common_err.SERVICE_ERROR,
-				Message: err.Error(),
+				Message: common_err.GetMsg(common_err.INVALID_PARAMS),
 			})
 	}
 
@@ -165,8 +165,11 @@ func PutCasaOSPort(ctx echo.Context) error {
 // @Success 200 {string} string "ok"
 // @Router /sys/restart [post]
 func PostKillCasaOS(ctx echo.Context) error {
-	os.Exit(0)
-	return nil
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		os.Exit(0)
+	}()
+	return ctx.JSON(common_err.SUCCESS, model.Result{Success: common_err.SUCCESS, Message: common_err.GetMsg(common_err.SUCCESS)})
 }
 
 // @Summary get system hardware info
@@ -311,22 +314,97 @@ func GetSystemNetInfo(ctx echo.Context) error {
 	return ctx.JSON(http.StatusOK, model.Result{Success: common_err.SUCCESS, Message: common_err.GetMsg(common_err.SUCCESS), Data: newNet})
 }
 
-func GetSystemProxy(ctx echo.Context) error {
-	url := ctx.QueryParam("url")
-	resp, err := http2.Get(url, 30*time.Second)
+// isPrivateOrReservedIP checks if an IP address is in a private, reserved, or link-local range.
+// Blocks: loopback (127.0.0.0/8, ::1), RFC1918 (10/8, 172.16/12, 192.168/16),
+// link-local (169.254/16, fe80::/10), cloud metadata (169.254.169.254), and IPv6 ULA (fc00::/7).
+func isPrivateOrReservedIP(ip net.IP) bool {
+	if ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() {
+		return true
+	}
+	// Cloud metadata endpoint
+	if ip.Equal(net.ParseIP("169.254.169.254")) {
+		return true
+	}
+	// RFC1918
+	if ip4 := ip.To4(); ip4 != nil {
+		if ip4[0] == 10 {
+			return true
+		}
+		if ip4[0] == 172 && ip4[1] >= 16 && ip4[1] <= 31 {
+			return true
+		}
+		if ip4[0] == 192 && ip4[1] == 168 {
+			return true
+		}
+		return false
+	}
+	// IPv6 ULA (fc00::/7)
+	if len(ip) == net.IPv6len && ip[0]&0xfe == 0xfc {
+		return true
+	}
+	return false
+}
+
+// isURLSafeToProxy checks if a URL targets a safe (non-private) host.
+// Resolves the hostname and blocks private/reserved IPs to prevent SSRF attacks.
+func isURLSafeToProxy(rawURL string) error {
+	u, err := url.Parse(rawURL)
 	if err != nil {
-		return ctx.JSON(http.StatusInternalServerError, model.Result{Success: common_err.SERVICE_ERROR, Message: err.Error()})
+		return fmt.Errorf("invalid URL")
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("only http/https URLs are allowed")
+	}
+	hostname := u.Hostname()
+	if hostname == "" {
+		return fmt.Errorf("URL must have a hostname")
+	}
+	// Quick block for obviously private hostnames
+	switch strings.ToLower(hostname) {
+	case "localhost", "0.0.0.0", "metadata.google.internal":
+		return fmt.Errorf("URL targets a blocked host")
+	}
+	// Resolve hostname and check all resulting IPs
+	ips, err := net.LookupIP(hostname)
+	if err != nil {
+		return fmt.Errorf("could not resolve hostname")
+	}
+	if len(ips) == 0 {
+		return fmt.Errorf("hostname resolved to no addresses")
+	}
+	for _, ip := range ips {
+		if isPrivateOrReservedIP(ip) {
+			return fmt.Errorf("URL targets a private/reserved network address")
+		}
+	}
+	return nil
+}
+
+func GetSystemProxy(ctx echo.Context) error {
+	rawURL := ctx.QueryParam("url")
+	if err := isURLSafeToProxy(rawURL); err != nil {
+		return ctx.JSON(http.StatusBadRequest, model.Result{
+			Success: common_err.INVALID_PARAMS,
+			Message: "Prohibited target: " + err.Error(),
+		})
+	}
+	resp, err := http2.Get(rawURL, 30*time.Second)
+	if err != nil {
+		return ctx.JSON(http.StatusBadGateway, model.Result{
+			Success: common_err.SERVICE_ERROR,
+			Message: common_err.GetMsg(common_err.SERVICE_ERROR),
+		})
 	}
 	defer resp.Body.Close()
-	for k, v := range ctx.Request().Header {
-		ctx.Request().Header.Add(k, v[0])
+	// Only copy safe headers from response
+	for k, v := range resp.Header {
+		if len(v) > 0 {
+			ctx.Response().Header().Set(k, v[0])
+		}
 	}
-	rda, _ := ioutil.ReadAll(resp.Body)
-	//	json.NewEncoder(c.Writer).Encode(json.RawMessage(string(rda)))
-	// 响应状态码
-	ctx.Response().Writer.WriteHeader(resp.StatusCode)
-	// 复制转发的响应Body到响应Body
-	io.Copy(ctx.Response().Writer, ioutil.NopCloser(bytes.NewBuffer(rda)))
+	rda, _ := io.ReadAll(resp.Body)
+	ctx.Response().WriteHeader(resp.StatusCode)
+	ctx.Response().Write(rda)
 	return nil
 }
 

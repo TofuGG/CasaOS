@@ -1,11 +1,13 @@
 package v1
 
 import (
+	"crypto/rand"
 	"fmt"
-	"io/ioutil"
-	"math/rand"
+	"io"
+	"math/big"
 	"net"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -21,14 +23,14 @@ func ZerotierProxy(ctx echo.Context) error {
 	// Read the port number from the file
 	w := ctx.Response().Writer
 	r := ctx.Request()
-	port, err := ioutil.ReadFile("/var/lib/zerotier-one/zerotier-one.port")
+	port, err := os.ReadFile("/var/lib/zerotier-one/zerotier-one.port")
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		http.Error(w, "zerotier service unavailable", http.StatusServiceUnavailable)
+		return nil
 	}
 
 	// Get the request path and remove "/zt"
 	path := strings.TrimPrefix(r.URL.Path, "/v1/zt")
-	fmt.Println(path)
 
 	// Build the target URL
 	targetURL := fmt.Sprintf("http://localhost:%s%s", strings.TrimSpace(string(port)), path)
@@ -36,36 +38,39 @@ func ZerotierProxy(ctx echo.Context) error {
 	// Create a new request
 	req, err := http.NewRequest(r.Method, targetURL, r.Body)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		http.Error(w, "failed to create proxy request", http.StatusInternalServerError)
+		return nil
 	}
 
 	// Add the X-ZT1-AUTH header
-	authToken, err := ioutil.ReadFile("/var/lib/zerotier-one/authtoken.secret")
+	authToken, err := os.ReadFile("/var/lib/zerotier-one/authtoken.secret")
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		http.Error(w, "zerotier auth unavailable", http.StatusServiceUnavailable)
+		return nil
 	}
 	req.Header.Set("X-ZT1-AUTH", strings.TrimSpace(string(authToken)))
 
 	copyHeaders(req.Header, r.Header)
 
-	client := http.Client{}
+	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		http.Error(w, "zerotier proxy request failed", http.StatusBadGateway)
+		return nil
 	}
 	defer resp.Body.Close()
 
 	copyHeaders(w.Header(), resp.Header)
 
-	respBody, err := ioutil.ReadAll(resp.Body)
+	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		http.Error(w, "failed to read zerotier response", http.StatusBadGateway)
+		return nil
 	}
 
 	// Return the response to the client
 	w.WriteHeader(resp.StatusCode)
 	w.Write(respBody)
-	// TODO
 	return nil
 }
 
@@ -280,11 +285,15 @@ func getZTIP(routes string) (ip, start, end, cidr string) {
 		}
 	}
 
-	rnd := rand.New(rand.NewSource(time.Now().UnixNano()))
 	ip = ""
 	if len(filteredCidrs) > 0 {
-		randomIndex := rnd.Intn(len(filteredCidrs))
-		selectedCIDR := filteredCidrs[randomIndex]
+		// Use crypto/rand for secure random selection (was: math/rand)
+		n, err := rand.Int(rand.Reader, big.NewInt(int64(len(filteredCidrs))))
+		if err != nil {
+			logger.Error("crypto/rand failed", zap.Error(err))
+			return
+		}
+		selectedCIDR := filteredCidrs[n.Int64()]
 		_, ipNet, err := net.ParseCIDR(selectedCIDR)
 		if err != nil {
 			logger.Error("ParseCIDR error", zap.Error(err))

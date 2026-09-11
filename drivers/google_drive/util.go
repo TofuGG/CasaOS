@@ -17,8 +17,8 @@ import (
 )
 
 var (
-	client_id     = "private build"
-	client_secret = "private build"
+	client_id     = ""
+	client_secret = ""
 )
 
 // do others that not defined in Driver interface

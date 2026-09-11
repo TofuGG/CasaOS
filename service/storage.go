@@ -1,11 +1,12 @@
 package service
 
 import (
-	"io/ioutil"
+	"os"
 
 	"github.com/IceWhaleTech/CasaOS-Common/utils/logger"
 	"github.com/IceWhaleTech/CasaOS/pkg/utils/file"
 	"github.com/IceWhaleTech/CasaOS/pkg/utils/httper"
+	"github.com/IceWhaleTech/CasaOS/pkg/utils/logutil"
 	"go.uber.org/zap"
 )
 
@@ -31,7 +32,7 @@ func (s *storageStruct) MountStorage(mountPoint, fs string) error {
 func (s *storageStruct) UnmountStorage(mountPoint string) error {
 	err := httper.Unmount(mountPoint)
 	if err == nil {
-		dir, _ := ioutil.ReadDir(mountPoint)
+		dir, _ := os.ReadDir(mountPoint)
 
 		if len(dir) == 0 {
 			file.RMDir(mountPoint)
@@ -88,10 +89,10 @@ func (s *storageStruct) CheckAndMountAll() error {
 			}
 		}
 		if !isMount {
-			logger.Info("when CheckAndMountAll MountStorage", zap.String("mountPoint", mountPoint), zap.String("fs", v))
+			logger.Info("when CheckAndMountAll MountStorage", zap.String("mountPoint", logutil.SanitizeLogString(mountPoint)), zap.String("fs", v))
 			err := MyService.Storage().MountStorage(mountPoint, v+":")
 			if err != nil {
-				logger.Error("when CheckAndMountAll then", zap.String("mountPoint", mountPoint), zap.String("fs", v), zap.Error(err))
+				logger.Error("when CheckAndMountAll then", zap.String("mountPoint", logutil.SanitizeLogString(mountPoint)), zap.String("fs", v), zap.Error(err))
 			}
 		}
 	}

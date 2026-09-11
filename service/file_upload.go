@@ -48,6 +48,11 @@ func (s *FileUploadService) TestChunk(
 		return fmt.Errorf("file not init")
 	}
 
+	// SECURITY: Validate chunk number bounds
+	if chunkNumber <= 0 || int(chunkNumber) > len(fileInfo.uploaded) {
+		return fmt.Errorf("chunk number out of range")
+	}
+
 	// return StatusNoContent instead of 404
 	// the is require by frontend
 	if !fileInfo.uploaded[chunkNumber-1] {
@@ -71,6 +76,17 @@ func (s *FileUploadService) UploadFile(
 	bin *multipart.FileHeader,
 ) error {
 	s.lock.Lock()
+
+	// SECURITY: Validate chunk parameters
+	if chunkNumber <= 0 || chunkNumber > totalChunks {
+		s.lock.Unlock()
+		return fmt.Errorf("chunk number out of range: %d (total: %d)", chunkNumber, totalChunks)
+	}
+	if totalChunks <= 0 {
+		s.lock.Unlock()
+		return fmt.Errorf("totalChunks must be positive")
+	}
+
 	fileInfoTemp, ok := s.uploadStatus.Load(identifier)
 	var fileInfo *FileInfo
 
@@ -140,9 +156,12 @@ func (s *FileUploadService) UploadFile(
 	s.lock.Lock()
 	// handle file after write a chunk
 	// handle single chunk upload twice
-	if !fileInfo.uploaded[chunkNumber-1] {
-		fileInfo.uploadedChunkNum++
-		fileInfo.uploaded[chunkNumber-1] = true
+	// SECURITY: Bounds check before array access
+	if chunkNumber-1 >= 0 && int(chunkNumber-1) < len(fileInfo.uploaded) {
+		if !fileInfo.uploaded[chunkNumber-1] {
+			fileInfo.uploadedChunkNum++
+			fileInfo.uploaded[chunkNumber-1] = true
+		}
 	}
 
 	// handle file after write all chunk

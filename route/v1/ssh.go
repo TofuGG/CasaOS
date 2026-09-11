@@ -2,9 +2,11 @@ package v1
 
 import (
 	"bytes"
+	"encoding/json"
 	"net/http"
 	"os/exec"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/IceWhaleTech/CasaOS-Common/utils/common_err"
@@ -23,7 +25,16 @@ import (
 var upgrader = websocket.Upgrader{
 	ReadBufferSize:   1024,
 	WriteBufferSize:  1024,
-	CheckOrigin:      func(r *http.Request) bool { return true },
+	CheckOrigin:      func(r *http.Request) bool {
+			origin := r.Header.Get("Origin")
+			if origin == "" {
+				return true // non-browser clients
+			}
+			return strings.HasPrefix(origin, "http://127.0.0.1") ||
+				strings.HasPrefix(origin, "http://localhost") ||
+				strings.HasPrefix(origin, "https://127.0.0.1") ||
+				strings.HasPrefix(origin, "https://localhost")
+		},
 	HandshakeTimeout: time.Duration(time.Second * 5),
 }
 
@@ -50,32 +61,56 @@ func WsSsh(ctx echo.Context) error {
 		return ctx.JSON(common_err.SERVICE_ERROR, modelCommon.Result{Success: common_err.SERVICE_ERROR, Message: common_err.GetMsg(common_err.SERVICE_ERROR), Data: "ssh server not found"})
 	}
 
-	userName := ctx.QueryParam("username")
-	password := ctx.QueryParam("password")
-	port := ctx.QueryParam("port")
-	wsConn, _ := upgrader.Upgrade(ctx.Response().Writer, ctx.Request(), nil)
+	wsConn, err := upgrader.Upgrade(ctx.Response().Writer, ctx.Request(), nil)
+	if err != nil {
+		logger.Error("websocket upgrade failed", zap.Error(err))
+		return nil
+	}
+	defer wsConn.Close()
+
+	// SECURITY: SSH credentials must never be sent in the URL query string —
+	// they would land in access logs, proxies and browser history. Read them
+	// from the first WebSocket frame instead (sent as JSON by the frontend).
+	wsConn.SetReadDeadline(time.Now().Add(10 * time.Second))
+	_, credsData, err := wsConn.ReadMessage()
+	if err != nil {
+		wsConn.WriteMessage(websocket.TextMessage, []byte("failed to read credentials"))
+		return nil
+	}
+	wsConn.SetReadDeadline(time.Time{})
+
+	var creds struct {
+		Username string `json:"username"`
+		Password string `json:"password"`
+		Port     string `json:"port"`
+	}
+	if err := json.Unmarshal(credsData, &creds); err != nil || creds.Username == "" || creds.Password == "" || creds.Port == "" {
+		wsConn.WriteMessage(websocket.TextMessage, []byte("username or password or port is empty"))
+		return nil
+	}
+
 	logBuff := new(bytes.Buffer)
 
 	quitChan := make(chan bool, 3)
-	// user := ""
-	// password := ""
-	var login int = 1
+	var loginAttempts int
+	const maxLoginAttempts = 3
 	cols, _ := strconv.Atoi(utils.DefaultQuery(ctx, "cols", "200"))
 	rows, _ := strconv.Atoi(utils.DefaultQuery(ctx, "rows", "32"))
 	var client *ssh.Client
-	for login != 0 {
-
+	for loginAttempts < maxLoginAttempts {
+		loginAttempts++
 		var err error
-		if userName == "" || password == "" || port == "" {
-			wsConn.WriteMessage(websocket.TextMessage, []byte("username or password or port is empty"))
-		}
-		client, err = sshHelper.NewSshClient(userName, password, port)
+		client, err = sshHelper.NewSshClient(creds.Username, creds.Password, creds.Port)
 
 		if err != nil && client == nil {
-			wsConn.WriteMessage(websocket.TextMessage, []byte(err.Error()))
+			wsConn.WriteMessage(websocket.TextMessage, []byte("Connection failed"))
 			wsConn.WriteMessage(websocket.TextMessage, []byte("\r\n\x1b[0m"))
+			if loginAttempts >= maxLoginAttempts {
+				wsConn.WriteMessage(websocket.TextMessage, []byte("Max login attempts reached"))
+				break
+			}
 		} else {
-			login = 0
+			break
 		}
 
 	}

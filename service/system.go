@@ -1,12 +1,14 @@
 package service
 
 import (
+	"bufio"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	net2 "net"
+	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -377,16 +379,118 @@ func (s *systemService) UpdateSystemVersion(version string) {
 		os.Remove(config.AppInfo.LogPath + "/upgrade.log")
 	}
 	file.CreateFile(config.AppInfo.LogPath + "/upgrade.log")
-	// go command2.OnlyExec("curl -fsSL https://raw.githubusercontent.com/LinkLeong/casaos-alpha/main/update.sh | bash")
+
+	updateURL := ""
 	if len(config.ServerInfo.UpdateUrl) > 0 {
-		go command.OnlyExec("curl -fsSL " + config.ServerInfo.UpdateUrl + " | bash")
+		// SECURITY: Only allow pinned https URLs on trusted CasaOS domains.
+		if !isSafeUpdateURL(config.ServerInfo.UpdateUrl) {
+			logger.Error("invalid or disallowed update URL, skipping", zap.String("url", config.ServerInfo.UpdateUrl))
+			return
+		}
+		updateURL = config.ServerInfo.UpdateUrl
 	} else {
 		osRelease, _ := file.ReadOSRelease()
-		go command.OnlyExec("curl -fsSL https://get.casaos.io/update?t=" + osRelease["MANUFACTURER"] + " | bash")
+		updateURL = "https://get.casaos.io/update?t=" + sanitizeManufacturer(osRelease["MANUFACTURER"])
 	}
 
-	// s.log.Error(config.AppInfo.ProjectPath + "/shell/tool.sh -r " + version)
-	// s.log.Error(command2.ExecResultStr(config.AppInfo.ProjectPath + "/shell/tool.sh -r " + version))
+	go s.runUpdateScript(updateURL)
+}
+
+// sanitizeManufacturer restricts a string to shell-safe characters.
+func sanitizeManufacturer(s string) string {
+	return strings.Map(func(r rune) rune {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' {
+			return r
+		}
+		return -1
+	}, s)
+}
+
+// isAllowedUpdateHost returns true if the host is a trusted CasaOS update domain.
+func isAllowedUpdateHost(host string) bool {
+	host = strings.ToLower(strings.TrimSpace(host))
+	if host == "" {
+		return false
+	}
+	if host == "get.casaos.io" {
+		return true
+	}
+	return strings.HasSuffix(host, ".casaos.io")
+}
+
+// isSafeUpdateURL validates that an update URL is https, is hosted on a
+// trusted CasaOS domain, and contains no shell metacharacters or whitespace.
+func isSafeUpdateURL(raw string) bool {
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return false
+	}
+	if parsed.Scheme != "https" || !isAllowedUpdateHost(parsed.Host) {
+		return false
+	}
+	if strings.ContainsAny(raw, " \t;&|`$(){}[]<>") {
+		return false
+	}
+	return true
+}
+
+// looksLikeShellScript performs a basic sanity check on a downloaded update
+// script to guard against proxy/HTML error pages being executed.
+func looksLikeShellScript(path string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	// Inspect the first few lines, skipping blank/comment-only lines, and look
+	// for a shebang or a common shell directive.
+	for i := 0; scanner.Scan() && i < 8; i++ {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		return strings.HasPrefix(line, "#!") ||
+			strings.HasPrefix(line, "set ") ||
+			strings.HasPrefix(line, "export ") ||
+			strings.HasPrefix(line, "source ") ||
+			strings.Contains(line, "/bin/sh") ||
+			strings.Contains(line, "/bin/bash") ||
+			strings.HasPrefix(line, "curl ") ||
+			strings.HasPrefix(line, "wget ")
+	}
+	return false
+}
+
+// runUpdateScript downloads the update script over pinned HTTPS into a private
+// temp file, sanity-checks it, then executes it locally — replacing the
+// previous "curl -fsSL <url> | bash" pattern.
+func (s *systemService) runUpdateScript(updateURL string) {
+	f, err := os.CreateTemp("", "casaos-update-*.sh")
+	if err != nil {
+		logger.Error("failed to create temp file for update", zap.Error(err))
+		return
+	}
+	scriptPath := f.Name()
+	f.Close()
+	defer os.Remove(scriptPath)
+
+	// Pin the URL protocol so an https redirect cannot downgrade to http, and
+	// require TLS 1.2+ to avoid legacy/downgrade attacks.
+	curlCmd := exec.Command("bash", "-c",
+		"curl -fsSL --proto '=https' --tlsv1.2 --connect-timeout 15 -o "+scriptPath+" "+updateURL)
+	if output, err := curlCmd.CombinedOutput(); err != nil {
+		logger.Error("failed to download update script", zap.Error(err), zap.String("output", string(output)))
+		return
+	}
+
+	if !looksLikeShellScript(scriptPath) {
+		logger.Error("downloaded update script failed sanity check, skipping")
+		return
+	}
+
+	command.OnlyExec("bash " + scriptPath)
 }
 
 func (s *systemService) UpdateAssist() {
@@ -434,12 +538,21 @@ func (s *systemService) GetCasaOSLogs(lineNumber int) string {
 		return err.Error()
 	}
 	defer file.Close()
-	content, err := io.ReadAll(file)
-	if err != nil {
-		return err.Error()
+
+	if lineNumber <= 0 {
+		lineNumber = 100
 	}
 
-	return string(content)
+	scanner := bufio.NewScanner(file)
+	var lines []string
+	for scanner.Scan() {
+		lines = append(lines, scanner.Text())
+		if len(lines) > lineNumber {
+			lines = lines[1:] // sliding window
+		}
+	}
+
+	return strings.Join(lines, "\n")
 }
 
 func GetDeviceAllIP() []string {
@@ -497,7 +610,14 @@ func GetCPUThermalZone() string {
 		}
 	}
 
-	Cache.SetDefault(keyName, path)
+	// When no thermal zone is found, cache with a very long TTL to avoid
+	// repeated scanning every 5 minutes (default cache expiration).
+	// Thermal zones don't appear/disappear at runtime.
+	if len(path) == 0 {
+		Cache.Set(keyName, path, 24*time.Hour)
+	} else {
+		Cache.SetDefault(keyName, path)
+	}
 	return path
 }
 

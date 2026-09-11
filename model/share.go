@@ -13,5 +13,6 @@ package model
 type Shares struct {
 	ID        uint   `json:"id"`
 	Anonymous bool   `json:"anonymous"`
+	Paused    bool   `json:"paused"`
 	Path      string `json:"path"`
 }

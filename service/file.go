@@ -28,7 +28,54 @@ import (
 
 var FileQueue sync.Map
 
-var OpStrArr []string
+var (
+	opStrMu  sync.Mutex
+	OpStrArr []string
+)
+
+// Thread-safe accessor functions
+func AppendOpStr(uid string) {
+	opStrMu.Lock()
+	defer opStrMu.Unlock()
+	OpStrArr = append(OpStrArr, uid)
+}
+
+func ShiftOpStr() string {
+	opStrMu.Lock()
+	defer opStrMu.Unlock()
+	if len(OpStrArr) == 0 {
+		return ""
+	}
+	uid := OpStrArr[0]
+	OpStrArr = OpStrArr[1:]
+	return uid
+}
+
+func GetOpStrLen() int {
+	opStrMu.Lock()
+	defer opStrMu.Unlock()
+	return len(OpStrArr)
+}
+
+func GetOpStrCopy() []string {
+	opStrMu.Lock()
+	defer opStrMu.Unlock()
+	cp := make([]string, len(OpStrArr))
+	copy(cp, OpStrArr)
+	return cp
+}
+
+func ClearOpStr() {
+	opStrMu.Lock()
+	defer opStrMu.Unlock()
+	OpStrArr = []string{}
+}
+
+func SetOpStr(arr []string) {
+	opStrMu.Lock()
+	defer opStrMu.Unlock()
+	OpStrArr = arr
+}
 
 type reader struct {
 	ctx context.Context
@@ -131,25 +178,26 @@ func FileOperate(k string) {
 }
 
 func ExecOpFile() {
-	len := len(OpStrArr)
+	len := GetOpStrLen()
 	if len == 0 {
 		return
 	}
 	if len > 1 {
 		len = 1
 	}
+	opList := GetOpStrCopy()
 	for i := 0; i < len; i++ {
-		go FileOperate(OpStrArr[i])
+		go FileOperate(opList[i])
 	}
 }
 
 // file move or copy and send notify
 func CheckFileStatus() {
 	for {
-		if len(OpStrArr) == 0 {
+		if GetOpStrLen() == 0 {
 			return
 		}
-		for _, v := range OpStrArr {
+		for _, v := range GetOpStrCopy() {
 			var total int64 = 0
 			item, ok := FileQueue.Load(v)
 			if !ok {

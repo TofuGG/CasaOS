@@ -31,10 +31,10 @@ func NotifyWS(ctx echo.Context) error {
 		return nil
 	}
 	defer ws.Close()
-	service.WebSocketConns = append(service.WebSocketConns, ws)
+	service.AddWebSocketConn(ws)
 
-	if !service.SocketRun {
-		service.SocketRun = true
+	if !service.GetSocketRun() {
+		service.SetSocketRun(true)
 		service.SendMeg()
 	}
 	for {

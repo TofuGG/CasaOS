@@ -31,6 +31,8 @@ type SharesService interface {
 	UpdateConfigFile()
 	InitSambaConfig()
 	DeleteShareByPath(path string)
+	PauseShare(id string) error
+	ResumeShare(id string) error
 }
 
 type sharesStruct struct {
@@ -38,7 +40,9 @@ type sharesStruct struct {
 }
 
 func (s *sharesStruct) DeleteShareByPath(path string) {
-	s.db.Where("path LIKE ?", path+"%").Delete(&model.SharesDBModel{})
+	// Use exact path match instead of prefix match (LIKE path%)
+	// Previously, deleting a parent share would silently kill all subfolder shares
+	s.db.Where("path = ?", path).Delete(&model.SharesDBModel{})
 	s.UpdateConfigFile()
 }
 
@@ -69,14 +73,44 @@ func (s *sharesStruct) DeleteShare(id string) {
 	s.UpdateConfigFile()
 }
 
+func (s *sharesStruct) PauseShare(id string) error {
+	result := s.db.Model(&model.SharesDBModel{}).Where("id = ?", id).Update("paused", true)
+	if result.Error != nil {
+		return result.Error
+	}
+	s.UpdateConfigFile()
+	return nil
+}
+
+func (s *sharesStruct) ResumeShare(id string) error {
+	result := s.db.Model(&model.SharesDBModel{}).Where("id = ?", id).Update("paused", false)
+	if result.Error != nil {
+		return result.Error
+	}
+	s.UpdateConfigFile()
+	return nil
+}
+
 func (s *sharesStruct) UpdateConfigFile() {
 	shares := []model2.SharesDBModel{}
-	s.db.Select("anonymous,path").Find(&shares)
+	s.db.Select("anonymous,paused,path").Find(&shares)
 	// generated config file
 	configStr := ""
 	for _, share := range shares {
 		dirName := filepath.Base(share.Path)
-		configStr += `
+		if share.Paused {
+			// Paused shares: completely hidden from network discovery
+			configStr += `
+[` + dirName + `]
+comment = CasaOS share ` + dirName + ` (paused)
+path = ` + share.Path + `
+browseable = No
+available = No
+
+`
+		} else if share.Anonymous {
+			// Anonymous/public shares: guest access, no auth required
+			configStr += `
 [` + dirName + `]
 comment = CasaOS share ` + dirName + `
 public = Yes
@@ -84,11 +118,29 @@ path = ` + share.Path + `
 browseable = Yes
 read only = No
 guest ok = Yes
-create mask = 0777
-directory mask = 0777
-force user = root
+create mask = 0644
+directory mask = 0755
+force user = nobody
+force group = nobody
 
 `
+		} else {
+			// Authenticated shares: require valid user, no guest access
+			configStr += `
+[` + dirName + `]
+comment = CasaOS share ` + dirName + `
+public = No
+path = ` + share.Path + `
+browseable = Yes
+read only = No
+guest ok = No
+create mask = 0644
+directory mask = 0755
+force user = nobody
+force group = nobody
+
+`
+		}
 	}
 	// write config file
 	file.WriteToPath([]byte(configStr), "/etc/samba", "smb.casa.conf")

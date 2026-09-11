@@ -12,7 +12,6 @@ package v1
 
 import (
 	"fmt"
-	"io/ioutil"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -59,6 +58,7 @@ func GetSambaSharesList(ctx echo.Context) error {
 	for _, v := range shares {
 		shareList = append(shareList, model.Shares{
 			Anonymous: v.Anonymous,
+			Paused:    v.Paused,
 			Path:      v.Path,
 			ID:        v.ID,
 		})
@@ -88,7 +88,7 @@ func PostSambaSharesCreate(ctx echo.Context) error {
 		shareDBModel.Anonymous = true
 		shareDBModel.Path = v.Path
 		shareDBModel.Name = filepath.Base(v.Path)
-		os.Chmod(v.Path, 0o777)
+		os.Chmod(v.Path, 0o755)
 		service.MyService.Shares().CreateShare(shareDBModel)
 	}
 
@@ -101,6 +101,28 @@ func DeleteSambaShares(ctx echo.Context) error {
 		return ctx.JSON(common_err.CLIENT_ERROR, model.Result{Success: common_err.INSUFFICIENT_PERMISSIONS, Message: common_err.GetMsg(common_err.INSUFFICIENT_PERMISSIONS)})
 	}
 	service.MyService.Shares().DeleteShare(id)
+	return ctx.JSON(common_err.SUCCESS, model.Result{Success: common_err.SUCCESS, Message: common_err.GetMsg(common_err.SUCCESS), Data: id})
+}
+
+func PauseSambaShare(ctx echo.Context) error {
+	id := ctx.Param("id")
+	if id == "" {
+		return ctx.JSON(common_err.CLIENT_ERROR, model.Result{Success: common_err.INVALID_PARAMS, Message: common_err.GetMsg(common_err.INVALID_PARAMS)})
+	}
+	if err := service.MyService.Shares().PauseShare(id); err != nil {
+		return ctx.JSON(common_err.SERVICE_ERROR, model.Result{Success: common_err.SERVICE_ERROR, Message: common_err.GetMsg(common_err.SERVICE_ERROR)})
+	}
+	return ctx.JSON(common_err.SUCCESS, model.Result{Success: common_err.SUCCESS, Message: common_err.GetMsg(common_err.SUCCESS), Data: id})
+}
+
+func ResumeSambaShare(ctx echo.Context) error {
+	id := ctx.Param("id")
+	if id == "" {
+		return ctx.JSON(common_err.CLIENT_ERROR, model.Result{Success: common_err.INVALID_PARAMS, Message: common_err.GetMsg(common_err.INVALID_PARAMS)})
+	}
+	if err := service.MyService.Shares().ResumeShare(id); err != nil {
+		return ctx.JSON(common_err.SERVICE_ERROR, model.Result{Success: common_err.SERVICE_ERROR, Message: common_err.GetMsg(common_err.SERVICE_ERROR)})
+	}
 	return ctx.JSON(common_err.SUCCESS, model.Result{Success: common_err.SUCCESS, Message: common_err.GetMsg(common_err.SUCCESS), Data: id})
 }
 
@@ -156,7 +178,8 @@ func PostSambaConnectionsCreate(ctx echo.Context) error {
 	// check connect is ok
 	directories, err := samba.GetSambaSharesList(connection.Host, connection.Port, connection.Username, connection.Password)
 	if err != nil {
-		return ctx.JSON(common_err.SERVICE_ERROR, model.Result{Success: common_err.SERVICE_ERROR, Message: common_err.GetMsg(common_err.SERVICE_ERROR), Data: err.Error()})
+		logger.Error("failed to get samba shares", zap.Error(err), zap.String("host", connection.Host))
+		return ctx.JSON(common_err.SERVICE_ERROR, model.Result{Success: common_err.SERVICE_ERROR, Message: common_err.GetMsg(common_err.SERVICE_ERROR)})
 	}
 
 	connectionDBModel := model2.ConnectionsDBModel{}
@@ -190,7 +213,8 @@ func DeleteSambaConnections(ctx echo.Context) error {
 	mountPointList, err := samba.GetSambaSharesList(connection.Host, connection.Port, connection.Username, connection.Password)
 	// mountPointList, err := service.MyService.System().GetDirPath(connection.MountPoint)
 	if err != nil {
-		return ctx.JSON(common_err.SERVICE_ERROR, model.Result{Success: common_err.SERVICE_ERROR, Message: common_err.GetMsg(common_err.SERVICE_ERROR), Data: err.Error()})
+		logger.Error("failed to get samba shares for delete", zap.Error(err), zap.String("host", connection.Host))
+		return ctx.JSON(common_err.SERVICE_ERROR, model.Result{Success: common_err.SERVICE_ERROR, Message: common_err.GetMsg(common_err.SERVICE_ERROR)})
 	}
 	baseHostPath := "/mnt/" + connection.Host
 	for _, v := range mountPointList {
@@ -198,11 +222,11 @@ func DeleteSambaConnections(ctx echo.Context) error {
 			err := service.MyService.Connections().UnmountSmaba(baseHostPath + "/" + v)
 			if err != nil {
 				logger.Error("unmount smaba error", zap.Error(err), zap.Any("path", baseHostPath+"/"+v))
-				return ctx.JSON(common_err.SERVICE_ERROR, model.Result{Success: common_err.SERVICE_ERROR, Message: common_err.GetMsg(common_err.SERVICE_ERROR), Data: err.Error()})
+				return ctx.JSON(common_err.SERVICE_ERROR, model.Result{Success: common_err.SERVICE_ERROR, Message: common_err.GetMsg(common_err.SERVICE_ERROR)})
 			}
 		}
 	}
-	dir, _ := ioutil.ReadDir(connection.MountPoint)
+	dir, _ := os.ReadDir(connection.MountPoint)
 	if len(dir) == 0 {
 		os.RemoveAll(connection.MountPoint)
 	}

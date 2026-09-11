@@ -100,7 +100,7 @@ func (i *notifyServer) SendFileOperateNotify(nowSend bool) {
 
 		model.State = "NORMAL"
 		list := []notify.File{}
-		OpStrArrbak := OpStrArr
+		OpStrArrbak := GetOpStrCopy()
 
 		for _, v := range OpStrArrbak {
 			tempItem, ok := FileQueue.Load(v)
@@ -125,7 +125,7 @@ func (i *notifyServer) SendFileOperateNotify(nowSend bool) {
 				task.Finished = true
 				task.Status = "FINISHED"
 				FileQueue.Delete(v)
-				OpStrArr = OpStrArr[1:]
+				ShiftOpStr()
 				go ExecOpFile()
 				list = append(list, task)
 				continue
@@ -170,7 +170,7 @@ func (i *notifyServer) SendFileOperateNotify(nowSend bool) {
 			model := notify.NotifyModel{}
 			model.State = "NORMAL"
 			list := []notify.File{}
-			OpStrArrbak := OpStrArr
+			OpStrArrbak := GetOpStrCopy()
 
 			for _, v := range OpStrArrbak {
 				tempItem, ok := FileQueue.Load(v)
@@ -194,7 +194,7 @@ func (i *notifyServer) SendFileOperateNotify(nowSend bool) {
 					task.Finished = true
 					task.Status = "FINISHED"
 					FileQueue.Delete(v)
-					OpStrArr = OpStrArr[1:]
+					ShiftOpStr()
 					go ExecOpFile()
 					list = append(list, task)
 					continue
@@ -300,21 +300,21 @@ func SendMeg() {
 
 		if len(list) > 0 {
 			var temp []*websocket.Conn
-			for _, v := range WebSocketConns {
+			for _, v := range GetWebSocketConnsCopy() {
 
 				err := v.WriteMessage(1, json)
 				if err == nil {
 					temp = append(temp, v)
 				}
 			}
-			WebSocketConns = temp
+			SetWebSocketConns(temp)
 			for _, v := range list {
 				MyService.Notify().MarkRead(v.Id, types.NOTIFY_READ)
 			}
 		}
 
-		if len(WebSocketConns) == 0 {
-			SocketRun = false
+		if GetWebSocketConnsLen() == 0 {
+			SetSocketRun(false)
 		}
 		time.Sleep(time.Second * 2)
 	}

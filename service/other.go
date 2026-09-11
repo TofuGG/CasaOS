@@ -1,6 +1,7 @@
 package service
 
 import (
+	"fmt"
 	"net/url"
 	"strings"
 	"sync"
@@ -8,6 +9,7 @@ import (
 
 	"github.com/IceWhaleTech/CasaOS-Common/utils/logger"
 	"github.com/IceWhaleTech/CasaOS/model"
+	"github.com/IceWhaleTech/CasaOS/pkg/utils/netutil"
 	"github.com/go-resty/resty/v2"
 	"github.com/tidwall/gjson"
 	"go.uber.org/zap"
@@ -100,12 +102,16 @@ func (s *otherService) Search(key string) ([]model.SearchEngine, error) {
 
 }
 
-func (s *otherService) AgentSearch(url string) ([]byte, error) {
+func (s *otherService) AgentSearch(rawURL string) ([]byte, error) {
+	// SECURITY: Validate URL to prevent SSRF
+	if err := netutil.IsURLSafeToProxy(rawURL); err != nil {
+		return nil, fmt.Errorf("prohibited target: %w", err)
+	}
 	client := resty.New()
-	client.SetTimeout(3 * time.Second) // 设置全局超时时间
-	resp, err := client.R().Get(url)
+	client.SetTimeout(3 * time.Second)
+	resp, err := client.R().Get(rawURL)
 	if err != nil {
-		logger.Error("Then get search result error: %v", zap.Error(err), zap.String("url", url))
+		logger.Error("agent search failed", zap.Error(err), zap.String("url", rawURL))
 		return nil, err
 	}
 	return resp.Body(), nil
