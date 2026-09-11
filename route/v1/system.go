@@ -241,6 +241,22 @@ func GetSystemUtilization(ctx echo.Context) error {
 	}
 
 	data["net"] = newNet
+
+	// Provide disk + USB info on the HTTP endpoint as well. Upstream delivers
+	// these only via the MessageBus socket push ("casaos:system:utilization"),
+	// so without a MessageBus the Disks widget had nothing to render — and
+	// mounted() crashed on the undefined value. The widget reads sys_disk as an
+	// object here (the socket variant arrives as a JSON string which the UI
+	// JSON.parses itself), so both transports are covered.
+	if diskInfo := service.MyService.System().GetDiskInfo(); diskInfo != nil {
+		data["sys_disk"] = map[string]interface{}{
+			"size":   diskInfo.Total,
+			"used":   diskInfo.Used,
+			"avail":  diskInfo.Free,
+			"health": "Healthy",
+		}
+	}
+	data["sys_usb"] = []interface{}{}
 	systemMap := service.MyService.Notify().GetSystemTempMap()
 	systemMap.Range(func(key, value interface{}) bool {
 		data[key.(string)] = value
