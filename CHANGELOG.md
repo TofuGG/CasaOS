@@ -16,6 +16,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+## [0.4.17]
+
+### Security
+
+- Harden remote-address handling: client-supplied `X-Forwarded-For` / `X-Real-IP` no longer trusted for IP-based auth decisions (`echo.ExtractIPDirect` on both routers)
+- Harden file-path safety: symlink resolution + mount-root allowlist in `pkg/utils/file/pathsafe.go`; wildcard recursive writes denied; sensitive reads (`.ssh`, `.aws`, credentials) blocked
+- Move SSH credentials from URL query string into the first WebSocket message
+- Restrict system-update downloads to `*.casaos.io` with HTTPS/TLS constraints and script sanity checks
+
 ## [0.4.16]
 
 ### Security
