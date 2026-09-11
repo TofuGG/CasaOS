@@ -81,6 +81,12 @@ func InitV2Router() http.Handler {
 
 	e.Use(echo_jwt.WithConfig(echo_jwt.Config{
 		Skipper: func(c echo.Context) bool {
+			// LAN-discovery / device-info endpoints are intentionally
+			// unauthenticated so Zima/CasaOS clients can identify the device
+			// before login. Everything else always requires JWT.
+			if v2Route.IsDiscoveryPath(c.Request().URL.Path) {
+				return true
+			}
 			return false // SECURITY: Always require JWT authentication
 		},
 		ParseTokenFunc: func(c echo.Context, token string) (interface{}, error) {
@@ -126,15 +132,29 @@ func InitV2Router() http.Handler {
 
 	e.Use(middleware.OapiRequestValidatorWithOptions(_swagger, &middleware.Options{
 		Skipper: func(c echo.Context) bool {
-			// jump validate when upload file
+			// The discovery endpoints are intentionally not part of the
+			// OpenAPI spec (a client probes them before it has a token), so
+			// skip validation for them. Note Header.Get is nil-safe here —
+			// the previous Header[...][0] form panicked on requests with no
+			// Content-Type header (e.g. any plain GET).
+			if v2Route.IsDiscoveryPath(c.Request().URL.Path) {
+				return true
+			}
+			// jump validate when upload file,
 			// because file upload can't pass validate
 			// issue: https://github.com/deepmap/oapi-codegen/issues/514
-			return strings.Contains(c.Request().Header[echo.HeaderContentType][0], "multipart/form-data")
+			return strings.Contains(c.Request().Header.Get(echo.HeaderContentType), "multipart/form-data")
 		},
 		Options: openapi3filter.Options{AuthenticationFunc: openapi3filter.NoopAuthenticationFunc},
 	}))
 
 	codegen.RegisterHandlersWithBaseURL(e, appManagement, V2APIPath)
+
+	// Zima client LAN-discovery endpoints. Registered directly (outside the
+	// OpenAPI spec) and exempt from auth/validation via the skippers above.
+	e.GET("/v2/zimaos/device/info", v2Route.GetDeviceInfo)
+	e.GET("/v2/casaos/device/info", v2Route.GetDeviceInfo)
+	e.GET("/v2/sys/info", v2Route.GetSysInfo)
 
 	return e
 }

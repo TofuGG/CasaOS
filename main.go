@@ -147,6 +147,8 @@ func main() {
 		"/v1/zt",
 		"/v1/test",
 		route.V2APIPath,
+		"/v2/sys",
+		"/v2/zimaos",
 		route.V2DocPath,
 		route.V3FilePath,
 	}

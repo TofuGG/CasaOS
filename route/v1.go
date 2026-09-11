@@ -95,6 +95,11 @@ func InitV1Router() http.Handler {
 	//	e.Any("/v1/test", v1.CheckNetwork)
 	v1Group.Use(echo_jwt.WithConfig(echo_jwt.Config{
 		Skipper: func(c echo.Context) bool {
+			// /v1/sys/info is a LAN-discovery probe — it must be reachable
+			// before login. Everything else always requires JWT.
+			if c.Request().URL.Path == "/v1/sys/info" {
+				return true
+			}
 			return false // SECURITY: Always require JWT authentication
 		},
 		ParseTokenFunc: func(c echo.Context, token string) (interface{}, error) {
@@ -117,6 +122,8 @@ func InitV1Router() http.Handler {
 		v1SysGroup.Use()
 		{
 			v1SysGroup.GET("/version", v1.GetSystemCheckVersion) // version/check
+
+			v1SysGroup.GET("/info", v1.GetSystemInfo) // LAN-discovery probe (unauthenticated)
 
 			v1SysGroup.POST("/update", v1.SystemUpdate)
 
