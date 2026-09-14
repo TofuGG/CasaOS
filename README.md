@@ -11,6 +11,9 @@
     </picture>
     <br/>
     <i>Connect with the community, establish autonomy, reduce the cost of SaaS, and MAXIMIZE the potential for a personalized copilot.</i>
+    <!-- UNOFFICIAL FORK WARNING -->
+    <br/>
+    <font color="red"><b>⚠️ UNOFFICIAL FORK — NOT THE OFFICIAL RELEASE.</b> This is a community fork of CasaOS maintained by <b>TofuGG</b>, NOT affiliated with or endorsed by the official CasaOS / IceWhaleTech team. Things may <b>break badly</b>, including possible <b>data loss</b>. Provided <b>AS-IS</b> with <b>no warranty</b> and <b>no official support</b> — do not report bugs upstream. By installing/updating you acknowledge the maintainer takes <b>no responsibility</b> if anything breaks or fails. <b>USE AT YOUR OWN RISK.</b></font>
     <br/>
     <br/>
     <!-- CasaOS Badges -->
@@ -127,34 +130,46 @@ Community Support
 - OpenWrt (🚧 Not Fully Tested Yet)
 - ArchLinux (🚧 Not Fully Tested Yet)
 
-### Quick Setup CasaOS
+### Quick Setup CasaOS (TofuGG fork)
+
+> ⚠️ **Unofficial fork.** This fork is maintained by **TofuGG** and is not
+> affiliated with IceWhaleTech. The official installer/updater commands
+> (`get.casaos.io`, `get.icewhale.io`, and the in-UI `Settings → Update` against
+> upstream) download **stock CasaOS** and will **overwrite this fork's
+> features**. Always install and update using the commands below, and keep this
+> fork's release assets published under the TofuGG org.
 
 Freshly install a system from the list above and run this command:
 
+> <font color="red"><b>⚠️ UNOFFICIAL FORK — NOT THE OFFICIAL RELEASE.</b> This installer installs the <b>TofuGG community fork</b> of CasaOS, not the official release. It is provided <b>AS-IS</b> with <b>no warranty</b> and <b>no official support</b>, and may <b>break badly</b> or cause <b>data loss</b>. By installing you acknowledge the fork maintainer takes <b>no responsibility</b> if anything breaks or fails. <b>USE AT YOUR OWN RISK.</b></font>
+
 ```sh
-wget -qO- https://get.casaos.io | sudo bash
+wget -qO- https://raw.githubusercontent.com/TofuGG/CasaOS/main/install.sh | sudo bash
 ```
 
 or
 
 ```sh
-curl -fsSL https://get.casaos.io | sudo bash
+curl -fsSL https://raw.githubusercontent.com/TofuGG/CasaOS/main/install.sh | sudo bash
 ```
 
-### Update CasaOS
+### Update CasaOS (TofuGG fork)
 
-CasaOS can be updated from the User Interface (UI), via `Settings ... Update`.  
+CasaOS can be updated from the User Interface (UI), via `Settings ... Update` —
+the fork's update fallback points at the TofuGG updater, never at upstream.
 
 Alternatively it can be updated from a terminal session.  To update from a terminal session, it must be done either from a secure shell (ssh) session to the device or from a directly attached terminal and keyboard to the device running CasaOS, this cannot be done from the terminal via the CasaOS User Interface (UI).  To update to the latest release of CasaOS from a terminal session run this command:
 
+> <font color="red"><b>⚠️ UNOFFICIAL FORK — NOT THE OFFICIAL RELEASE.</b> This updater updates to the <b>TofuGG community fork</b> of CasaOS, not the official release. If you are updating from the <b>official release</b>, things may <b>break badly</b> or cause <b>data loss</b>. Provided <b>AS-IS</b> with <b>no warranty</b> and <b>no official support</b>. By updating you acknowledge the fork maintainer takes <b>no responsibility</b> if anything breaks or fails. <b>USE AT YOUR OWN RISK.</b></font>
+
 ```sh
-wget -qO- https://get.casaos.io/update | sudo bash
+wget -qO- https://raw.githubusercontent.com/TofuGG/CasaOS/main/update | sudo bash
 ```
 
 or
 
 ```sh
-curl -fsSL https://get.casaos.io/update | sudo bash
+curl -fsSL https://raw.githubusercontent.com/TofuGG/CasaOS/main/update | sudo bash
 ```
 
 To determine version of CasaOS from a terminal session run this command:
@@ -203,7 +218,7 @@ CasaOS's own services have been hardened against remote- and local-attacker clas
 | 1 | `echo.ExtractIPDirect()` — client-supplied `X-Forwarded-For` / `X-Real-IP` never trusted for address determination (closes IP-based auth bypasses) | `route/v1.go`, `route/v2.go` |
 | 2–4 | Path traversal + symlink escapes — `pkg/utils/file/pathsafe.go` rewritten: resolved paths (`filepath.EvalSymlinks`) must live under an allowlist of mount roots (`$HOME`, `/DATA`, `/mnt`, `/media`, `/tmp`, `/var/lib/casaos`); wildcard & recursive writes denied; sensitive reads (`.ssh`, `.aws`, credentials) blocked | `pkg/utils/file/pathsafe.go`, `route/v1/file.go` |
 | 5 | SSH credentials moved from URL query string into the first WebSocket message; `?token=` retained only for the browser WebSocket routes | `route/v1/ssh.go`, UI `TerminalCard.vue` |
-| 6 | Update/download pipeline — URL domain allowlist (`get.casaos.io`), `curl` fetch to a temp file with `--proto '=https' --tlsv1.2`, sanity checks before execution | `service/system.go` |
+| 6 | Update/download pipeline — URL allowlist restricted to the `TofuGG` GitHub org (`raw.githubusercontent.com/TofuGG/`, `github.com/TofuGG/`; upstream `casaos.io` hosts hard-blocked), `curl` fetch to a temp file with `--proto '=https' --tlsv1.2`, sanity checks before execution; version check polls the fork's own GitHub releases (fails closed) | `service/system.go`, `service/casa.go` |
 
 ## Contributing
 
@@ -266,3 +281,21 @@ Detailed changes for each release are documented in the [release notes](https://
         <img src="https://us-central1-trackgit-analytics.cloudfunctions.net/token/ping/l5q8egi92tfhlxd70l2l" alt="trackgit-views" />
     </a>
 </p>
+
+---
+
+<p align="center">
+    <font color="red"><b>⚠️ UNOFFICIAL FORK — NOT THE OFFICIAL RELEASE</b></font>
+</p>
+
+<font color="red">
+This repository is a <b>community fork of CasaOS</b> maintained by <b>TofuGG</b>.
+It is <b>not affiliated with or endorsed by</b> the official CasaOS / IceWhaleTech team.
+Running this fork may cause unexpected behavior, <b>break badly</b>, or even result in
+<b>data loss</b>. It is provided <b>AS-IS</b> with <b>no warranty</b> and <b>no official
+support</b> — please do not report problems to the official CasaOS project.
+
+By installing or updating to this fork you acknowledge and agree that the fork
+maintainer (<b>TofuGG</b>) takes <b>no responsibility or liability</b> if anything
+breaks, fails, or is lost. <b>USE AT YOUR OWN RISK.</b>
+</font>

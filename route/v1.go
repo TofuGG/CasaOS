@@ -141,6 +141,8 @@ func InitV1Router() http.Handler {
 			v1SysGroup.POST("/stop", v1.PostKillCasaOS)
 
 			v1SysGroup.GET("/utilization", v1.GetSystemUtilization)
+			v1SysGroup.GET("/utilization/interval", v1.GetSystemUtilizationInterval)
+			v1SysGroup.PUT("/utilization/interval", v1.PutSystemUtilizationInterval)
 			// v1SysGroup.GET("/cpu", v1.GetSystemCupInfo)
 			// v1SysGroup.GET("/mem", v1.GetSystemMemInfo)
 			// v1SysGroup.GET("/disk", v1.GetSystemDiskInfo)

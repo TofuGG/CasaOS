@@ -19,6 +19,7 @@ import (
 	"unsafe"
 
 	"github.com/IceWhaleTech/CasaOS/model"
+	"github.com/IceWhaleTech/CasaOS/pkg/hwstatus"
 	"github.com/IceWhaleTech/CasaOS/service"
 )
 
@@ -31,7 +32,9 @@ func SendAllHardwareStatusBySocket() {
 			if n.Name == netCardName {
 				item := *(*model.IOCountersStat)(unsafe.Pointer(&n))
 				item.State = strings.TrimSpace(service.MyService.System().GetNetState(n.Name))
-				item.Time = time.Now().Unix()
+				// Millisecond precision so the UI can compute accurate
+				// throughput at sub-second push intervals.
+				item.Time = time.Now().UnixMilli()
 				newNet = append(newNet, item)
 				break
 			}
@@ -71,6 +74,26 @@ func SendAllHardwareStatusBySocket() {
 		return true
 	})
 	service.MyService.Notify().SendNotify("casaos:system:utilization", body)
+}
+
+// StartHardwareStatusLoop runs the per-interval push loop until the process exits.
+func StartHardwareStatusLoop() {
+	hwstatus.Start(SendAllHardwareStatusBySocket)
+}
+
+// GetHardwareStatusInterval is the current push interval in milliseconds.
+func GetHardwareStatusInterval() int {
+	return hwstatus.GetInterval()
+}
+
+// SetHardwareStatusInterval clamps ms to [250, 5000] (0 → default 5000) and applies it.
+func SetHardwareStatusInterval(ms int) int {
+	return hwstatus.SetInterval(ms)
+}
+
+// StopHardwareStatusLoop stops the background loop (safe to call once at shutdown).
+func StopHardwareStatusLoop() {
+	hwstatus.Stop()
 }
 
 // func MonitoryUSB() {

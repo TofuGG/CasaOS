@@ -42,6 +42,7 @@ type SystemService interface {
 	GetCasaOSLogs(lineNumber int) string
 	UpdateAssist()
 	UpSystemPort(port string)
+	UpHardwareStatusInterval(ms int)
 	GetTimeZone() string
 	UpAppOrderFile(str, id string)
 	GetAppOrderFile(id string) []byte
@@ -373,7 +374,7 @@ func (c *systemService) GetNet(physics bool) []string {
 }
 
 func (s *systemService) UpdateSystemVersion(version string) {
-	keyName := "casa_version"
+	keyName := "casa_version:v2"
 	Cache.Delete(keyName)
 	if file.Exists(config.AppInfo.LogPath + "/upgrade.log") {
 		os.Remove(config.AppInfo.LogPath + "/upgrade.log")
@@ -382,50 +383,50 @@ func (s *systemService) UpdateSystemVersion(version string) {
 
 	updateURL := ""
 	if len(config.ServerInfo.UpdateUrl) > 0 {
-		// SECURITY: Only allow pinned https URLs on trusted CasaOS domains.
+		// SECURITY: Only allow pinned https URLs on trusted update hosts.
 		if !isSafeUpdateURL(config.ServerInfo.UpdateUrl) {
 			logger.Error("invalid or disallowed update URL, skipping", zap.String("url", config.ServerInfo.UpdateUrl))
 			return
 		}
 		updateURL = config.ServerInfo.UpdateUrl
 	} else {
-		osRelease, _ := file.ReadOSRelease()
-		updateURL = "https://get.casaos.io/update?t=" + sanitizeManufacturer(osRelease["MANUFACTURER"])
+		// Default to the TofuGG fork updater (not upstream get.casaos.io).
+		updateURL = "https://raw.githubusercontent.com/TofuGG/CasaOS/main/update"
 	}
 
 	go s.runUpdateScript(updateURL)
 }
 
-// sanitizeManufacturer restricts a string to shell-safe characters.
-func sanitizeManufacturer(s string) string {
-	return strings.Map(func(r rune) rune {
-		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' {
-			return r
-		}
-		return -1
-	}, s)
-}
-
-// isAllowedUpdateHost returns true if the host is a trusted CasaOS update domain.
-func isAllowedUpdateHost(host string) bool {
+// isAllowedUpdateHost returns true if the host is a trusted GitHub host and
+// the path targets the TofuGG fork. Upstream casaos.io hosts are hard-blocked
+// so the update pipeline can never run an upstream-served script.
+func isAllowedUpdateHost(host, path string) bool {
 	host = strings.ToLower(strings.TrimSpace(host))
 	if host == "" {
 		return false
 	}
-	if host == "get.casaos.io" {
-		return true
+	switch host {
+	case "raw.githubusercontent.com", "github.com":
+		return strings.HasPrefix(path, "/TofuGG/")
 	}
-	return strings.HasSuffix(host, ".casaos.io")
+	return false
 }
 
 // isSafeUpdateURL validates that an update URL is https, is hosted on a
-// trusted CasaOS domain, and contains no shell metacharacters or whitespace.
+// trusted GitHub host path under TofuGG/, and contains no shell
+// metacharacters or whitespace.
 func isSafeUpdateURL(raw string) bool {
 	parsed, err := url.Parse(raw)
 	if err != nil {
 		return false
 	}
-	if parsed.Scheme != "https" || !isAllowedUpdateHost(parsed.Host) {
+	if parsed.Scheme != "https" || !isAllowedUpdateHost(parsed.Host, parsed.Path) {
+		return false
+	}
+	// Reject any query string or fragment: the allowed URLs are plain pinned
+	// resource paths, and query/fragment parameters are never required for the
+	// update pipeline.
+	if parsed.RawQuery != "" || parsed.ForceQuery || parsed.Fragment != "" {
 		return false
 	}
 	if strings.ContainsAny(raw, " \t;&|`$(){}[]<>") {
@@ -527,6 +528,31 @@ func (s *systemService) UpSystemPort(port string) {
 		config.ServerInfo.HttpPort = port
 	}
 	config.Cfg.SaveTo(config.SystemConfigInfo.ConfigPath)
+}
+
+func (s *systemService) UpHardwareStatusInterval(ms int) {
+	if ms <= 0 {
+		ms = 5000
+	}
+	if ms < 250 {
+		ms = 250
+	}
+	if ms > 5000 {
+		ms = 5000
+	}
+	config.Cfg.Section("server").Key("HardwareStatusInterval").SetValue(strconv.Itoa(ms))
+	config.ServerInfo.HardwareStatusInterval = ms
+	config.Cfg.SaveTo(configFileSavePath())
+}
+
+// configFileSavePath returns the configured system config path, falling back
+// to the runtime-resolved CasaOS config file path. This fixes a latent
+// SaveTo("") bug on setups where the [system] section has no ConfigPath key.
+func configFileSavePath() string {
+	if len(config.SystemConfigInfo.ConfigPath) > 0 {
+		return config.SystemConfigInfo.ConfigPath
+	}
+	return config.ConfigFilePath
 }
 
 func (s *systemService) GetCasaOSLogs(lineNumber int) string {
@@ -643,7 +669,7 @@ func (s *systemService) GetCPUTemperature() int {
 
 func (s *systemService) GetCPUPower() map[string]string {
 	data := make(map[string]string, 2)
-	data["timestamp"] = strconv.FormatInt(time.Now().Unix(), 10)
+	data["timestamp"] = strconv.FormatInt(time.Now().UnixMilli(), 10)
 	if file.Exists("/sys/class/powercap/intel-rapl/intel-rapl:0/energy_uj") {
 		data["value"] = strings.TrimSpace(string(file.ReadFullFile("/sys/class/powercap/intel-rapl/intel-rapl:0/energy_uj")))
 	} else {
@@ -653,23 +679,37 @@ func (s *systemService) GetCPUPower() map[string]string {
 }
 
 func (s *systemService) SystemReboot() error {
+	// Prefer systemd when available; fall back to the classic init path.
+	if commandExists("systemctl") {
+		cmd := exec2.Command("systemctl", "reboot")
+		if _, err := cmd.CombinedOutput(); err == nil {
+			return nil
+		}
+	}
 	arg := []string{"6"}
 	cmd := exec2.Command("init", arg...)
 	_, err := cmd.CombinedOutput()
-	if err != nil {
-		return err
-	}
-	return nil
+	return err
 }
 
 func (s *systemService) SystemShutdown() error {
+	// Prefer systemd when available; fall back to the classic init path.
+	if commandExists("systemctl") {
+		cmd := exec2.Command("systemctl", "poweroff")
+		if _, err := cmd.CombinedOutput(); err == nil {
+			return nil
+		}
+	}
 	arg := []string{"0"}
 	cmd := exec2.Command("init", arg...)
 	_, err := cmd.CombinedOutput()
-	if err != nil {
-		return err
-	}
-	return nil
+	return err
+}
+
+// commandExists reports whether an executable is present on PATH.
+func commandExists(name string) bool {
+	_, err := exec.LookPath(name)
+	return err == nil
 }
 
 func NewSystemService() SystemService {

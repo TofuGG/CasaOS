@@ -15,10 +15,12 @@ import (
 	"unsafe"
 
 	http2 "github.com/IceWhaleTech/CasaOS-Common/utils/http"
+	"github.com/IceWhaleTech/CasaOS-Common/utils/logger"
 	"github.com/IceWhaleTech/CasaOS-Common/utils/port"
 	"github.com/IceWhaleTech/CasaOS/common"
 	"github.com/IceWhaleTech/CasaOS/model"
 	"github.com/IceWhaleTech/CasaOS/pkg/config"
+	"github.com/IceWhaleTech/CasaOS/pkg/hwstatus"
 	"github.com/IceWhaleTech/CasaOS/pkg/utils"
 	"github.com/IceWhaleTech/CasaOS/pkg/utils/common_err"
 	"github.com/IceWhaleTech/CasaOS/pkg/utils/version"
@@ -27,6 +29,7 @@ import (
 	"github.com/IceWhaleTech/CasaOS/types"
 	"github.com/labstack/echo/v4"
 	"github.com/tidwall/gjson"
+	"go.uber.org/zap"
 )
 
 // @Summary check version
@@ -233,7 +236,7 @@ func GetSystemUtilization(ctx echo.Context) error {
 			if n.Name == netCardName {
 				item := *(*model.IOCountersStat)(unsafe.Pointer(&n))
 				item.State = strings.TrimSpace(service.MyService.System().GetNetState(n.Name))
-				item.Time = time.Now().Unix()
+				item.Time = time.Now().UnixMilli()
 				newNet = append(newNet, item)
 				break
 			}
@@ -263,6 +266,46 @@ func GetSystemUtilization(ctx echo.Context) error {
 		return true
 	})
 	return ctx.JSON(common_err.SUCCESS, model.Result{Success: common_err.SUCCESS, Message: common_err.GetMsg(common_err.SUCCESS), Data: data})
+}
+
+// GetSystemUtilizationInterval returns the current dashboard hardware-status
+// push interval in milliseconds.
+func GetSystemUtilizationInterval(ctx echo.Context) error {
+	return ctx.JSON(common_err.SUCCESS, model.Result{
+		Success: common_err.SUCCESS,
+		Message: common_err.GetMsg(common_err.SUCCESS),
+		Data:    map[string]int{"interval_ms": hwstatus.GetInterval()},
+	})
+}
+
+// PutSystemUtilizationInterval updates the dashboard hardware-status push
+// interval. The value is clamped to [250, 5000] ms (0 → 5000) and persisted
+// to the CasaOS config file.
+func PutSystemUtilizationInterval(ctx echo.Context) error {
+	payload := &struct {
+		IntervalMs int `json:"interval_ms"`
+	}{}
+	if err := ctx.Bind(payload); err != nil {
+		return ctx.JSON(http.StatusBadRequest, model.Result{
+			Success: common_err.SERVICE_ERROR,
+			Message: common_err.GetMsg(common_err.INVALID_PARAMS),
+		})
+	}
+	if payload.IntervalMs < 0 {
+		return ctx.JSON(http.StatusBadRequest, model.Result{
+			Success: common_err.SERVICE_ERROR,
+			Message: common_err.GetMsg(common_err.INVALID_PARAMS),
+		})
+	}
+
+	ms := hwstatus.SetInterval(payload.IntervalMs)
+	service.MyService.System().UpHardwareStatusInterval(ms)
+
+	return ctx.JSON(common_err.SUCCESS, model.Result{
+		Success: common_err.SUCCESS,
+		Message: common_err.GetMsg(common_err.SUCCESS),
+		Data:    map[string]int{"interval_ms": ms},
+	})
 }
 
 // @Summary get cpu info
@@ -426,10 +469,18 @@ func GetSystemProxy(ctx echo.Context) error {
 
 func PutSystemState(ctx echo.Context) error {
 	state := ctx.Param("state")
-	if strings.ToLower(state) == "off" {
-		service.MyService.System().SystemShutdown()
-	} else if strings.ToLower(state) == "restart" {
-		service.MyService.System().SystemReboot()
+	var err error
+	switch strings.ToLower(state) {
+	case "off":
+		err = service.MyService.System().SystemShutdown()
+	case "restart":
+		err = service.MyService.System().SystemReboot()
+	}
+	if err != nil {
+		// Log the real error server-side; do not expose internal detail
+		// (e.g. missing binaries/paths) to API clients.
+		logger.Error("power action failed", zap.Error(err), zap.String("state", state))
+		return ctx.JSON(http.StatusInternalServerError, model.Result{Success: common_err.SERVICE_ERROR, Message: "power action failed"})
 	}
 	return ctx.JSON(http.StatusOK, model.Result{Success: common_err.SUCCESS, Message: common_err.GetMsg(common_err.SUCCESS), Data: "The operation will be completed shortly."})
 }

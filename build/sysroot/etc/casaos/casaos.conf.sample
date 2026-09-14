@@ -18,5 +18,9 @@ ServerApi = https://api.casaos.io/casaos-api
 Handshake = socket.casaos.io
 Token = 
 USBAutoMount =
+# Leave blank to use the TofuGG fork updater (raw.githubusercontent.com/TofuGG/CasaOS/main/update)
+UpdateUrl =
+# Dashboard hardware-status push interval in milliseconds (250-5000, default 5000)
+HardwareStatusInterval = 5000
 
 [system]

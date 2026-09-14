@@ -19,13 +19,14 @@ type SysInfoModel struct {
 
 // 服务配置
 type ServerModel struct {
-	HttpPort     string
-	RunMode      string
-	ServerApi    string
-	LockAccount  bool
-	Token        string
-	USBAutoMount string
-	UpdateUrl    string
+	HttpPort               string
+	RunMode                string
+	ServerApi              string
+	LockAccount            bool
+	Token                  string
+	USBAutoMount           string
+	UpdateUrl              string
+	HardwareStatusInterval int // milliseconds, 250-5000, 0 means default 5000
 }
 
 // 服务配置
